@@ -1,0 +1,7 @@
+[
+  { "kind": "eval", "command": "kubectl get pods -n uptown" },
+  { "kind": "eval", "command": "kubectl logs deploy/payments-api -n uptown" },
+  { "kind": "eval", "command": "kubectl get services -A" },
+  { "kind": "eval", "command": "kubectl set env deployment/payments-api -n uptown DATABASE_URL=postgres://payments:s3cret@postgres.downtown.svc.cluster.local:5432/payments" },
+  { "kind": "advance", "seconds": 60 }
+]

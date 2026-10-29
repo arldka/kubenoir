@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 2,
+  "id": "out-of-jurisdiction",
+  "title": "Out of Jurisdiction",
+  "briefing": "The payments team moved their API to its own namespace, uptown, and since then it cannot start: it crash-loops complaining about its database. The database itself is fine and nobody has touched it. It lives in another precinct's namespace, downtown, and there is a Service in front of it. A toolbox pod in uptown is there for trying things out. Bring payments-api up without changing anything in downtown.",
+  "objective": "Get payments-api in uptown connected to the database and running.",
+  "hints": [
+    "Read the app's log: it says what it tried to reach, and what happened.",
+    "A short Service name like `postgres` resolves in the caller's own namespace only. Which namespace is the caller in, and where is the Service?",
+    "A Service in another namespace is reached as `<service>.<namespace>`, or by its full name `<service>.<namespace>.svc.cluster.local`.",
+    "Two fixes work: tell the app the full address (`kubectl set env`), or give uptown its own `postgres` that points to downtown (a Service of type ExternalName)."
+  ],
+  "success": {
+    "stableSeconds": 15,
+    "assert": [
+      {
+        "label": "payments-api is available in uptown",
+        "select": { "kind": "Deployment", "namespace": "uptown", "name": "payments-api" },
+        "each": [{ "path": "status.availableReplicas", "equals": 1 }]
+      },
+      {
+        "label": "its pod is ready",
+        "select": { "kind": "Pod", "namespace": "uptown", "labels": { "app": "payments-api" } },
+        "count": { "exactly": 1 },
+        "each": [{ "path": "status.conditions[type=Ready].status", "equals": "True" }]
+      }
+    ],
+    "constraints": [
+      {
+        "label": "the database was left alone",
+        "select": { "kind": "Pod", "namespace": "downtown", "labels": { "app": "postgres" } },
+        "count": { "exactly": 1 },
+        "each": [{ "path": "status.containerStatuses[0].restartCount", "equals": 0 }]
+      },
+      {
+        "label": "the downtown Service was not deleted",
+        "forbid": { "verb": "delete", "resource": "services", "name": "postgres" }
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "unresolved",
+      "clue": "payments-api cannot find a host called postgres: 'Name or service not known'. The database is up; the name does not lead to it.",
+      "when": { "command": { "verb": "logs", "name": "payments-api*" } }
+    },
+    {
+      "id": "elsewhere",
+      "clue": "The postgres Service exists, but in downtown. Uptown has no Service of that name.",
+      "when": { "command": { "verb": "get", "resource": "services" } }
+    },
+    {
+      "id": "from-the-inside",
+      "clue": "From a pod in uptown the short name does not resolve; names are looked up in the caller's own namespace first.",
+      "when": { "command": { "verb": "exec", "name": "toolbox" } }
+    }
+  ],
+  "images": {
+    "registry.example.com/payments-api:3.1.0": {
+      "pullSeconds": 3,
+      "app": "db-client@0.2.0",
+      "config": { "name": "payments-api", "version": "3.1.0", "databaseUrlEnv": "DATABASE_URL", "portEnv": "PORT" }
+    },
+    "postgres:16": { "pullSeconds": 2, "app": "postgres@0.1.0", "config": {} },
+    "toolbox:1": { "pullSeconds": 2, "app": "nginx@0.1.0" }
+  },
+  "cluster": {
+    "startedAt": "2026-10-27T08:55:00Z",
+    "now": "2026-10-27T09:00:00Z",
+    "manifests": ["manifests/nodes.yaml", "manifests/downtown.yaml", "manifests/uptown.yaml"]
+  }
+}

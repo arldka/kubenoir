@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: uptown
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments-api
+  namespace: uptown
+  labels:
+    app: payments-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payments-api
+  template:
+    metadata:
+      labels:
+        app: payments-api
+    spec:
+      containers:
+      - name: payments-api
+        image: registry.example.com/payments-api:3.1.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: '8080'
+        - name: DATABASE_URL
+          value: postgres://payments:s3cret@postgres:5432/payments
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: toolbox
+  namespace: uptown
+  labels:
+    app: toolbox
+spec:
+  containers:
+  - name: toolbox
+    image: toolbox:1

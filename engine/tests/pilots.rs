@@ -505,3 +505,109 @@ mod nobody_answering {
         assert_eq!(status(&e)["findings"]["found"].as_array().unwrap().len(), 3);
     }
 }
+
+mod out_of_jurisdiction {
+    use super::*;
+
+    fn engine() -> Engine {
+        common::engine("out-of-jurisdiction")
+    }
+
+    fn url(host: &str) -> String {
+        format!(
+            "kubectl set env deployment/payments-api -n uptown DATABASE_URL=postgres://payments:s3cret@{host}/payments"
+        )
+    }
+
+    const ALIAS: &str = "apiVersion: v1\nkind: Service\nmetadata:\n  name: postgres\n  namespace: uptown\nspec:\n  type: ExternalName\n  externalName: postgres.downtown.svc.cluster.local\n";
+
+    #[test]
+    fn the_name_does_not_lead_anywhere_from_uptown() {
+        let mut e = engine();
+        // Between runs: a container that just restarted has not got as far as the failure yet.
+        e.advance(3);
+        let logs = e.eval("kubectl logs deploy/payments-api -n uptown");
+        assert!(
+            logs.contains("could not translate host name \"postgres\" to address: Name or service not known"),
+            "{logs}"
+        );
+        assert!(
+            e.eval("kubectl get pods -n uptown").contains("CrashLoopBackOff")
+                || e.eval("kubectl get pods -n uptown").contains("Error")
+        );
+        assert!(e.eval("kubectl get services -A").contains("downtown"));
+        assert_eq!(
+            e.eval("kubectl exec -n uptown toolbox -- curl http://postgres:5432"),
+            "curl: (6) Could not resolve host: postgres\ncommand terminated with exit code 6"
+        );
+        // Reaching across is a matter of the name.
+        let reached = e.eval("kubectl exec -n uptown toolbox -- curl -s http://postgres.downtown:5432");
+        assert!(reached.starts_with("FATAL:"), "{reached}");
+        assert!(!solved(&e));
+    }
+
+    #[test]
+    fn every_name_that_reaches_downtown_closes_the_case() {
+        let ways: [Way; 5] = [
+            ("fqdn", &|e| {
+                e.eval(&url("postgres.downtown.svc.cluster.local:5432"));
+            }),
+            ("service.namespace", &|e| {
+                e.eval(&url("postgres.downtown:5432"));
+            }),
+            ("service.namespace.svc", &|e| {
+                e.eval(&url("postgres.downtown.svc:5432"));
+            }),
+            ("external name alias", &|e| {
+                e.write_file("alias.yaml", ALIAS);
+                e.eval("kubectl apply -f alias.yaml");
+            }),
+            ("fqdn with a trailing dot", &|e| {
+                e.eval(&url("postgres.downtown.svc.cluster.local.:5432"));
+            }),
+        ];
+        for (name, play) in ways {
+            let mut e = engine();
+            play(&mut e);
+            e.advance(90);
+            assert!(
+                solved(&e),
+                "{name}: {}",
+                e.eval("kubectl logs deploy/payments-api -n uptown")
+            );
+            assert_eq!(status(&e)["outcome"], "closed", "{name}");
+        }
+    }
+
+    #[test]
+    fn near_misses_do_not() {
+        for (name, host) in [
+            ("misspelled namespace", "postgres.downtwn:5432"),
+            ("the port", "postgres.downtown:5433"),
+            ("wrong service", "database.downtown:5432"),
+        ] {
+            let mut e = engine();
+            e.eval(&url(host));
+            e.advance(90);
+            assert!(!solved(&e), "{name}");
+        }
+    }
+
+    #[test]
+    fn deleting_the_downtown_service_costs_the_case() {
+        let mut e = engine();
+        e.eval("kubectl delete service postgres -n downtown");
+        e.eval(&url("postgres.downtown:5432"));
+        e.advance(60);
+        assert!(!solved(&e), "nothing is behind the name any more");
+    }
+
+    #[test]
+    fn the_findings_are_discoverable() {
+        let mut e = engine();
+        e.eval("kubectl logs deploy/payments-api -n uptown");
+        e.eval("kubectl get services -A");
+        e.eval("kubectl exec -n uptown toolbox -- curl http://postgres:5432");
+        assert_eq!(status(&e)["findings"]["found"].as_array().unwrap().len(), 3);
+    }
+}
