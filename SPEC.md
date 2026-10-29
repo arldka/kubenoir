@@ -107,7 +107,7 @@ T16|x|image catalog + `imagePullSecrets` → ErrImagePull/ImagePullBackOff|V16,I
 T17|x|WASI fs preopens in `engine/src/apps/wasi.rs`: ConfigMap/Secret/emptyDir mounts, read-only where k8s is|I.app,V13,V14,C4
 T18|x|decided (C14): oracle answers from the cluster state at container start; ⊥ resumable runs; fix visible after the container restarts|C3,C6,C14,V32
 T19|x|Service + EndpointSlice controller|V11
-T20|.|connectivity oracle in `engine/src/` (DNS, ports, endpoints, listen check), evaluated at container start|V8,V9,V10,V32,C6,C14
+T20|x|connectivity oracle in `engine/src/` (DNS, ports, endpoints, listen check), evaluated at container start|V8,V9,V10,V32,C6,C14
 T21|.|app ABI: listen declaration + request handler; `kit` helpers; new `http-responder` template app|I.app,C4,C5
 T22|.|`kubectl exec <pod> -- curl` builtin via oracle + handler|I.shell,V10
 T23|.|`db-client` new version: connect via oracle host call, server described by target pod's app (`postgres` template), ⊥ static `database.host`|C4,C5,C6

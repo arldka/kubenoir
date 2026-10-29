@@ -19,6 +19,7 @@ mod logs;
 mod manifests;
 mod mutate;
 mod names;
+mod net;
 mod parser;
 mod patch;
 mod render;
