@@ -13,6 +13,7 @@ mod namespace;
 mod pods;
 mod replicaset;
 mod scheduler;
+mod service;
 pub(crate) mod volumes;
 
 pub use kubelet::{select_log_instance, LogSelection};
@@ -53,7 +54,8 @@ fn pass(env: &Env<'_>) -> Result<bool, StoreError> {
     let replica_sets = replicaset::pass(env)?;
     let scheduled = scheduler::pass(env)?;
     let ran = kubelet::pass(env)?;
-    Ok(namespaces || deployments || replica_sets || scheduled || ran)
+    let services = service::pass(env)?;
+    Ok(namespaces || deployments || replica_sets || scheduled || ran || services)
 }
 
 /// `(namespace, name, uid)` of a pod, with the defaults the API server would apply.

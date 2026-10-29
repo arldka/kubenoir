@@ -12,7 +12,7 @@ const WIDTH: usize = 76;
 /// The JSON schema of a kind: the object schema plus a `$defs` table for everything it names.
 fn root_schema(kind: &str) -> Option<Value> {
     use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
-    use k8s_openapi::api::core::v1::{ConfigMap, Event, Namespace, Node, Pod, Secret, Service};
+    use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Event, Namespace, Node, Pod, Secret, Service};
     let generator = SchemaGenerator::default();
     let schema = match kind {
         "ConfigMap" => generator.into_root_schema_for::<ConfigMap>(),
@@ -23,6 +23,8 @@ fn root_schema(kind: &str) -> Option<Value> {
         "Pod" => generator.into_root_schema_for::<Pod>(),
         "ReplicaSet" => generator.into_root_schema_for::<ReplicaSet>(),
         "Secret" => generator.into_root_schema_for::<Secret>(),
+        "Endpoints" => generator.into_root_schema_for::<Endpoints>(),
+        "EndpointSlice" => generator.into_root_schema_for::<k8s_openapi::api::discovery::v1::EndpointSlice>(),
         "Service" => generator.into_root_schema_for::<Service>(),
         _ => return None,
     };

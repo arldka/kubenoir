@@ -87,10 +87,13 @@ macro_rules! kind {
 
 use k8s_openapi::api::apps::v1 as apps;
 use k8s_openapi::api::core::v1 as core;
+use k8s_openapi::api::discovery::v1 as discovery;
 
-static KINDS: [KindInfo; 9] = [
+static KINDS: [KindInfo; 11] = [
     kind!(core::ConfigMap, "ConfigMap", "", "v1", "configmaps", "configmap", ["cm"], namespaced: true, generation: false, label: false),
     kind!(apps::Deployment, "Deployment", "apps", "apps/v1", "deployments", "deployment", ["deploy"], namespaced: true, generation: true, label: false),
+    kind!(core::Endpoints, "Endpoints", "", "v1", "endpoints", "endpoints", ["ep"], namespaced: true, generation: false, label: false),
+    kind!(discovery::EndpointSlice, "EndpointSlice", "discovery.k8s.io", "discovery.k8s.io/v1", "endpointslices", "endpointslice", [], namespaced: true, generation: false, label: false),
     kind!(core::Event, "Event", "", "v1", "events", "event", ["ev"], namespaced: true, generation: false, label: false),
     kind!(core::Namespace, "Namespace", "", "v1", "namespaces", "namespace", ["ns"], namespaced: false, generation: false, label: true),
     kind!(core::Node, "Node", "", "v1", "nodes", "node", ["no"], namespaced: false, generation: false, label: false),
@@ -131,8 +134,6 @@ const UNSIMULATED_KINDS: &[&str] = &[
     "cronjob",
     "customresourcedefinition",
     "daemonset",
-    "endpoints",
-    "endpointslice",
     "horizontalpodautoscaler",
     "ingress",
     "ingressclass",
@@ -169,8 +170,6 @@ const UNSIMULATED_NAMES: &[&str] = &[
     "customresourcedefinitions",
     "daemonsets",
     "ds",
-    "ep",
-    "endpointslices",
     "hpa",
     "horizontalpodautoscalers",
     "ing",

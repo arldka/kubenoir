@@ -184,7 +184,7 @@ fn configmaps_secrets_and_services() {
         e.eval("kubectl get svc"),
         "\
 NAME         TYPE           CLUSTER-IP   EXTERNAL-IP   PORT(S)        AGE
-front-door   LoadBalancer   <none>       <pending>     80:30080/TCP   30m
+front-door   LoadBalancer   10.96.0.10   <pending>     80:30080/TCP   30m
 outside      ExternalName   <none>       example.com   80/TCP         30m"
     );
     assert_eq!(

@@ -1446,7 +1446,7 @@ fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
 }
 
 /// The kinds `kubectl describe` can describe.
-const DESCRIBABLE: &[&str] = &["Pod", "Deployment", "ReplicaSet", "Event", "Namespace"];
+const DESCRIBABLE: &[&str] = &["Pod", "Deployment", "ReplicaSet", "Event", "Namespace", "Service"];
 
 fn parse_describe(args: &[&str]) -> Result<DescribeArgs, ParseError> {
     let mut positional = KindArgs::default();

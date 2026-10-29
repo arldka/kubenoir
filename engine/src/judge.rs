@@ -1064,7 +1064,15 @@ mod tests {
 
     #[test]
     fn every_registered_kind_and_file_verb_is_accepted() {
-        for kind in ["Node", "Namespace", "ConfigMap", "Secret", "Service"] {
+        for kind in [
+            "Node",
+            "Namespace",
+            "ConfigMap",
+            "Secret",
+            "Service",
+            "Endpoints",
+            "EndpointSlice",
+        ] {
             assert!(
                 rules(json!({"success": {"assert": [{"label": "a", "select": {"kind": kind}}]}})).is_ok(),
                 "{kind}"
@@ -1072,7 +1080,7 @@ mod tests {
         }
         let err = rules(json!({"success": {"assert": [{"label": "a", "select": {"kind": "Pods"}}]}})).unwrap_err();
         assert!(
-            err.contains("(expected ConfigMap, Deployment, Event, Namespace, Node, Pod"),
+            err.contains("(expected ConfigMap, Deployment, Endpoints, EndpointSlice, Event, Namespace, Node, Pod"),
             "{err}"
         );
         for verb in ["apply", "create", "delete"] {

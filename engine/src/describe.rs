@@ -32,6 +32,16 @@ pub fn describe(args: &DescribeArgs, store: &ClusterStore, now: i64) -> Result<S
             let owned = owned_replica_sets(store, namespace, deployment.metadata.uid.as_deref().unwrap_or_default())?;
             Ok(describe_deployment(&deployment, &owned, events, now))
         }),
+        "Service" => describe_each(args, store, namespace, |manifest, events| {
+            let endpoints = store
+                .get(
+                    "Endpoints",
+                    namespace,
+                    manifest["metadata"]["name"].as_str().unwrap_or_default(),
+                )?
+                .unwrap_or_default();
+            Ok(describe_service(&manifest, &endpoints, events, now))
+        }),
         other => Ok(format!(
             "error: describing {} is not supported",
             api::info(other).map_or_else(|| other.to_string(), |i| i.resource())
@@ -61,6 +71,118 @@ fn describe_namespace(namespace: &k8s_openapi::api::core::v1::Namespace) -> Stri
     out.push(String::new());
     out.push("No LimitRange resource.".into());
     out.join("\n")
+}
+
+/// `kubectl describe service`: the selector, the addresses and, above all, the endpoints, which
+/// is the line that tells a wrong selector from a wrong port.
+fn describe_service(service: &Value, endpoints: &Value, events: &[Event], now: i64) -> String {
+    let spec = &service["spec"];
+    let text = |v: &Value| v.as_str().map(str::to_string);
+    let map = |v: &Value| -> Option<std::collections::BTreeMap<String, String>> {
+        v.as_object().map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                .collect()
+        })
+    };
+    let kind = text(&spec["type"]).unwrap_or_else(|| "ClusterIP".into());
+    let mut rows = vec![
+        (
+            "Name:".to_string(),
+            vec![text(&service["metadata"]["name"]).unwrap_or_default()],
+        ),
+        (
+            "Namespace:".into(),
+            vec![text(&service["metadata"]["namespace"]).unwrap_or_else(|| DEFAULT_NAMESPACE.into())],
+        ),
+        (
+            "Labels:".into(),
+            map_lines(map(&service["metadata"]["labels"]).as_ref(), "="),
+        ),
+        (
+            "Annotations:".into(),
+            map_lines(map(&service["metadata"]["annotations"]).as_ref(), ": "),
+        ),
+        ("Selector:".into(), map_lines(map(&spec["selector"]).as_ref(), "=")),
+        ("Type:".into(), vec![kind.clone()]),
+    ];
+    if kind == "ExternalName" {
+        rows.push((
+            "External Name:".into(),
+            vec![text(&spec["externalName"]).unwrap_or_default()],
+        ));
+    } else {
+        rows.push((
+            "IP Family Policy:".into(),
+            vec![text(&spec["ipFamilyPolicy"]).unwrap_or_else(|| NONE.into())],
+        ));
+        rows.push((
+            "IP Families:".into(),
+            vec![text(&spec["ipFamilies"][0]).unwrap_or_else(|| NONE.into())],
+        ));
+        rows.push((
+            "IP:".into(),
+            vec![text(&spec["clusterIP"]).unwrap_or_else(|| NONE.into())],
+        ));
+        rows.push((
+            "IPs:".into(),
+            vec![text(&spec["clusterIPs"][0]).unwrap_or_else(|| NONE.into())],
+        ));
+    }
+    let ports = spec["ports"].as_array().cloned().unwrap_or_default();
+    for port in &ports {
+        let protocol = text(&port["protocol"]).unwrap_or_else(|| "TCP".into());
+        let name = text(&port["name"]).unwrap_or_else(|| "<unset>".into());
+        let target = match &port["targetPort"] {
+            Value::String(s) => s.clone(),
+            other => other.to_string().trim_matches('"').to_string(),
+        };
+        rows.push(("Port:".into(), vec![format!("{name}  {}/{protocol}", port["port"])]));
+        rows.push(("TargetPort:".into(), vec![format!("{target}/{protocol}")]));
+        if let Some(node_port) = port["nodePort"].as_i64().filter(|n| *n != 0) {
+            rows.push(("NodePort:".into(), vec![format!("{name}  {node_port}/{protocol}")]));
+        }
+        let ready = endpoints_of(endpoints, port);
+        rows.push((
+            "Endpoints:".into(),
+            vec![if ready.is_empty() { NONE.into() } else { ready.join(",") }],
+        ));
+    }
+    if ports.is_empty() && kind != "ExternalName" {
+        rows.push(("Endpoints:".into(), vec![NONE.into()]));
+    }
+    rows.push((
+        "Session Affinity:".into(),
+        vec![text(&spec["sessionAffinity"]).unwrap_or_else(|| "None".into())],
+    ));
+    if events.is_empty() {
+        rows.push(("Events:".into(), vec![NONE.into()]));
+    }
+    let mut out = Vec::new();
+    push_block(&mut out, 0, &rows);
+    out.extend(events_section(events, now));
+    out.join("\n")
+}
+
+/// The ready `ip:port` pairs an Endpoints object lists for one Service port.
+fn endpoints_of(endpoints: &Value, service_port: &Value) -> Vec<String> {
+    let name = service_port["name"].as_str();
+    let mut out = Vec::new();
+    for subset in endpoints["subsets"].as_array().into_iter().flatten() {
+        for port in subset["ports"].as_array().into_iter().flatten() {
+            if port["name"].as_str() != name {
+                continue;
+            }
+            for address in subset["addresses"].as_array().into_iter().flatten() {
+                out.push(format!(
+                    "{}:{}",
+                    address["ip"].as_str().unwrap_or_default(),
+                    port["port"]
+                ));
+            }
+        }
+    }
+    out
 }
 
 fn owned_replica_sets(store: &ClusterStore, namespace: &str, owner_uid: &str) -> Result<Vec<ReplicaSet>, StoreError> {

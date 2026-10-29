@@ -163,7 +163,6 @@ fn resource_types_that_exist_but_are_not_simulated_say_so() {
         "sts",
         "netpol",
         "hpa",
-        "endpoints",
         "all",
         "serviceaccounts",
     ] {
@@ -191,8 +190,8 @@ fn resource_types_that_exist_but_are_not_simulated_say_so() {
 fn commands_that_only_handle_some_kinds_name_the_kind_they_refuse() {
     let mut e = engine();
     assert_eq!(
-        e.eval("kubectl describe svc x"),
-        "error: kubectl describe for services is not available in this terminal"
+        e.eval("kubectl describe cronjob x"),
+        "error: the resource type cronjob is not available in this terminal"
     );
     assert_eq!(
         e.eval("kubectl describe cm x"),

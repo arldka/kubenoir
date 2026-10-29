@@ -1,7 +1,8 @@
 //! Output printers for Pods: kubectl-style tables, `-o wide`, `-o name`, `-o json`, `-o yaml`.
 
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
-use k8s_openapi::api::core::v1::{ConfigMap, Event, Namespace, Node, Pod, PodTemplateSpec, Secret, Service};
+use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Event, Namespace, Node, Pod, PodTemplateSpec, Secret, Service};
+use k8s_openapi::api::discovery::v1::EndpointSlice;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use serde::de::DeserializeOwned;
@@ -133,6 +134,8 @@ fn table(info: &KindInfo, items: &[Value], wide: bool, now: &Time) -> Table {
         "Secret" => secret_table(&typed::<Secret>(items), now),
         "Namespace" => namespace_table(&typed::<Namespace>(items), now),
         "Node" => node_table(&typed::<Node>(items), wide, now),
+        "Endpoints" => endpoints_table(&typed::<Endpoints>(items), now),
+        "EndpointSlice" => slice_table(&typed::<EndpointSlice>(items), now),
         _ => service_table(&typed::<Service>(items), wide, now),
     }
 }
@@ -522,6 +525,77 @@ fn node_table(items: &[Node], wide: bool, now: &Time) -> Table {
         })
         .collect();
     Table::new(headers, rows, items.iter().map(|n| &n.metadata))
+}
+
+/// `10.244.0.5:8080,10.244.1.7:8080 + 1 more...`: kubectl shows at most three endpoints.
+fn endpoint_list(endpoints: &[String]) -> String {
+    match endpoints.len() {
+        0 => "<none>".into(),
+        1..=3 => endpoints.join(","),
+        n => format!("{} + {} more...", endpoints[..3].join(","), n - 3),
+    }
+}
+
+fn endpoints_table(items: &[Endpoints], now: &Time) -> Table {
+    let rows = items
+        .iter()
+        .map(|e| {
+            let mut addresses = Vec::new();
+            for subset in e.subsets.iter().flatten() {
+                for address in subset.addresses.iter().flatten() {
+                    for port in subset.ports.iter().flatten() {
+                        addresses.push(format!("{}:{}", address.ip, port.port));
+                    }
+                    if subset.ports.as_ref().is_none_or(Vec::is_empty) {
+                        addresses.push(address.ip.clone());
+                    }
+                }
+            }
+            vec![
+                e.metadata.name.clone().unwrap_or_default(),
+                endpoint_list(&addresses),
+                object_age(&e.metadata, now),
+            ]
+        })
+        .collect();
+    Table::new(
+        vec!["NAME", "ENDPOINTS", "AGE"],
+        rows,
+        items.iter().map(|e| &e.metadata),
+    )
+}
+
+fn slice_table(items: &[EndpointSlice], now: &Time) -> Table {
+    let rows = items
+        .iter()
+        .map(|s| {
+            let ports = s
+                .ports
+                .iter()
+                .flatten()
+                .map(|p| p.port.map_or_else(|| "*".to_string(), |p| p.to_string()))
+                .collect::<Vec<_>>()
+                .join(",");
+            let addresses: Vec<String> = s
+                .endpoints
+                .iter()
+                .flatten()
+                .flat_map(|e| e.addresses.iter().cloned())
+                .collect();
+            vec![
+                s.metadata.name.clone().unwrap_or_default(),
+                s.address_type.clone(),
+                or_none(ports),
+                endpoint_list(&addresses),
+                object_age(&s.metadata, now),
+            ]
+        })
+        .collect();
+    Table::new(
+        vec!["NAME", "ADDRESSTYPE", "PORTS", "ENDPOINTS", "AGE"],
+        rows,
+        items.iter().map(|s| &s.metadata),
+    )
 }
 
 fn service_ports(service: &Service) -> String {
