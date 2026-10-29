@@ -7,6 +7,7 @@
 pub mod config;
 mod container_env;
 mod deployment;
+mod images;
 mod kubelet;
 mod namespace;
 mod pods;

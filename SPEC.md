@@ -96,7 +96,7 @@ T38|x|`kubectl edit` → boss's reprimand (parse error variant printed as is, st
 T13|x|verbs: `run`, `create namespace\|deployment\|configmap\|secret`, `set image`, `scale`, `rollout status\|history\|undo`, `label`, `expose`|I.cmd
 T14|x|Namespace kind + cluster-scoped resources + `namespaces "x" not found`|V1
 T15|x|env `valueFrom`/`envFrom` from ConfigMap/Secret at start|V12,V15
-T16|.|image catalog + `imagePullSecrets` → ErrImagePull/ImagePullBackOff|V16,I.scenario
+T16|x|image catalog + `imagePullSecrets` → ErrImagePull/ImagePullBackOff|V16,I.scenario
 T17|.|WASI fs preopens in `engine/src/apps/wasi.rs`: ConfigMap/Secret/emptyDir mounts, read-only where k8s is|I.app,V13,V14,C4
 T18|.|decide oracle timing: answer from start-time snapshot \| resumable app runs (wasmi resumable calls); replay ⊥ constraint (C3). record in §C|C3,C6,V8
 T19|.|Service + EndpointSlice controller|V11

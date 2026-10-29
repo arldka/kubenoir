@@ -19,6 +19,19 @@ pub struct ClusterConfig {
     /// The apps those images run, supplied by the caller rather than the scenario file.
     #[serde(skip)]
     pub apps: AppSet,
+    /// Whether only the listed images exist (`imageCatalog: "closed"`). Otherwise an image the
+    /// scenario does not mention pulls fine and runs a silent process.
+    #[serde(skip)]
+    pub closed_catalog: bool,
+}
+
+/// The credentials a registry demands for an image: only a docker-registry Secret with these,
+/// named in the pod's `imagePullSecrets`, lets the image be pulled.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PullAuth {
+    pub username: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,6 +43,10 @@ pub struct ImageSpec {
     pub app: Option<String>,
     /// The app's own configuration, handed to it as-is (JSON).
     pub config: serde_json::Value,
+    /// Whether the image exists in its registry. `false` makes every pull fail with "not found".
+    pub exists: bool,
+    /// Set when the registry only serves the image to someone who is logged in.
+    pub auth: Option<PullAuth>,
 }
 
 impl Default for ImageSpec {
@@ -38,6 +55,8 @@ impl Default for ImageSpec {
             pull_seconds: DEFAULT_PULL_SECONDS,
             app: None,
             config: serde_json::Value::Null,
+            exists: true,
+            auth: None,
         }
     }
 }
@@ -71,6 +90,20 @@ mod tests {
         assert_eq!(config.pull_seconds("img:1"), 5);
         assert_eq!(config.pull_seconds("img:2"), DEFAULT_PULL_SECONDS);
         assert_eq!(config.pull_seconds("unknown"), DEFAULT_PULL_SECONDS);
+    }
+
+    #[test]
+    fn images_exist_unless_said_otherwise_and_may_need_auth() {
+        let config: ClusterConfig = serde_json::from_str(
+            r#"{"images": {"a:1": {}, "b:1": {"exists": false},
+                           "c:1": {"auth": {"username": "u", "password": "p"}}}}"#,
+        )
+        .unwrap();
+        assert!(config.images["a:1"].exists && config.images["a:1"].auth.is_none());
+        assert!(!config.images["b:1"].exists);
+        assert_eq!(config.images["c:1"].auth.as_ref().unwrap().username, "u");
+        assert!(!config.closed_catalog);
+        assert!(serde_json::from_str::<ClusterConfig>(r#"{"images": {"a:1": {"auth": {"user": "u"}}}}"#).is_err());
     }
 
     #[test]

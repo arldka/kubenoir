@@ -19,7 +19,7 @@ use k8s_openapi::api::core::v1::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{container_env, pod_identity, pods, Env};
+use super::{container_env, images, pod_identity, pods, Env};
 use crate::apps::{self, Launch, Program};
 use crate::clock;
 use crate::events::{self, EventType, Involved, Source};
@@ -36,6 +36,9 @@ const CLEAN_RUN_SECS: i64 = 600;
 /// ties, a process that dies within a second never flaps Ready, so rollouts of a crashing
 /// image stall exactly as they do on a real cluster.
 const READY_DELAY_SECS: i64 = 1;
+/// A failed pull shows as `ErrImagePull` for this long, then as `ImagePullBackOff` until the
+/// next attempt.
+const ERR_IMAGE_PULL_SECS: i64 = 5;
 /// Safety valve against a program that could never advance time.
 const MAX_STEPS_PER_PASS: usize = 10_000;
 
@@ -77,6 +80,14 @@ struct Runtime {
     /// the kubelet tries again every [`BACKOFF_BASE_SECS`].
     #[serde(default)]
     config_error: Option<String>,
+    /// Why the image could not be pulled on the last attempt; the container is waiting to try
+    /// again (backoff doubling per failure, like the real kubelet's image pull backoff).
+    #[serde(default)]
+    pull_error: Option<String>,
+    #[serde(default)]
+    pull_failures: u32,
+    #[serde(default)]
+    pull_failed_at: i64,
 }
 
 enum Step {
@@ -101,6 +112,9 @@ impl Runtime {
             ready: false,
             last: None,
             config_error: None,
+            pull_error: None,
+            pull_failures: 0,
+            pull_failed_at: 0,
         }
     }
 
@@ -321,6 +335,33 @@ fn apply(ctx: &PodCtx<'_>, container: &Container, rt: &mut Runtime, t: i64, step
     match step {
         Step::Start => {
             let first_start = rt.phase == Phase::Creating;
+            if first_start {
+                // The image comes first. Every attempt uses the pod's current image and pull
+                // secrets, so fixing either takes effect on the next retry.
+                let c = Some(container.name.as_str());
+                if rt.pull_failures > 0 {
+                    ctx.event(
+                        c,
+                        EventType::Normal,
+                        "Pulling",
+                        &format!("Pulling image \"{image}\""),
+                        t,
+                    )?;
+                }
+                if let Err(message) = images::check_pull(ctx.env, &ctx.pod, &image)? {
+                    ctx.event(c, EventType::Warning, "Failed", &message, t)?;
+                    ctx.event(c, EventType::Warning, "Failed", "Error: ErrImagePull", t)?;
+                    let backoff = format!("Back-off pulling image \"{image}\"");
+                    ctx.event(c, EventType::Normal, "BackOff", &backoff, t)?;
+                    ctx.event(c, EventType::Warning, "Failed", "Error: ImagePullBackOff", t)?;
+                    rt.pull_failures += 1;
+                    rt.pull_error = Some(message);
+                    rt.pull_failed_at = t;
+                    rt.due = t + (BACKOFF_BASE_SECS << (rt.pull_failures - 1).min(10)).min(BACKOFF_CAP_SECS);
+                    return Ok(());
+                }
+                rt.pull_error = None;
+            }
             // The environment is read now, at the start; a running container keeps what it got.
             let resolved = match container_env::resolve(ctx.env.store, &ctx.pod, container)? {
                 Ok(resolved) => resolved,
@@ -457,7 +498,7 @@ fn sync_status(pod: &mut Pod, spec: &PodSpec, runtimes: &BTreeMap<String, Runtim
     let statuses: Vec<ContainerStatus> = spec
         .containers
         .iter()
-        .map(|c| container_status(c, runtimes.get(&c.name), &namespace, &name, &uid))
+        .map(|c| container_status(c, runtimes.get(&c.name), &namespace, &name, &uid, now))
         .collect();
 
     let all_exited = !runtimes.is_empty() && runtimes.values().all(|rt| rt.phase == Phase::Exited);
@@ -525,7 +566,14 @@ fn sync_status(pod: &mut Pod, spec: &PodSpec, runtimes: &BTreeMap<String, Runtim
     pod.status = Some(status);
 }
 
-fn container_status(c: &Container, rt: Option<&Runtime>, namespace: &str, pod: &str, uid: &str) -> ContainerStatus {
+fn container_status(
+    c: &Container,
+    rt: Option<&Runtime>,
+    namespace: &str,
+    pod: &str,
+    uid: &str,
+    now: i64,
+) -> ContainerStatus {
     let image = c.image.clone().unwrap_or_default();
     let mut status = ContainerStatus {
         name: c.name.clone(),
@@ -550,6 +598,14 @@ fn container_status(c: &Container, rt: Option<&Runtime>, namespace: &str, pod: &
         }),
         ..Default::default()
     };
+    if let Some(message) = rt.pull_error.as_ref().filter(|_| rt.phase == Phase::Creating) {
+        status.state = Some(if now - rt.pull_failed_at < ERR_IMAGE_PULL_SECS {
+            waiting("ErrImagePull", Some(message.clone()))
+        } else {
+            waiting("ImagePullBackOff", Some(format!("Back-off pulling image \"{image}\"")))
+        });
+        return status;
+    }
     if let Some(message) = rt.config_error.as_ref().filter(|_| rt.phase != Phase::Running) {
         status.state = Some(waiting("CreateContainerConfigError", Some(message.clone())));
         status.last_state = rt.last.as_ref().map(terminated);

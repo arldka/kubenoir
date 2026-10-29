@@ -36,6 +36,10 @@ struct Scenario {
     /// What each image runs; see `controllers::config`.
     #[serde(default)]
     images: BTreeMap<String, ImageSpec>,
+    /// `"open"` (default): images the scenario does not list pull fine. `"closed"`: only listed
+    /// images exist, so any other reference (a mistyped tag) fails to pull.
+    #[serde(default, rename = "imageCatalog")]
+    image_catalog: ImageCatalog,
     /// What counts as solving the case; see `judge`.
     #[serde(default)]
     success: Option<Success>,
@@ -47,6 +51,14 @@ struct Scenario {
     #[serde(default)]
     files: Vec<String>,
     cluster: ClusterSeed,
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ImageCatalog {
+    #[default]
+    Open,
+    Closed,
 }
 
 #[derive(Debug, Deserialize)]
@@ -312,6 +324,7 @@ pub fn load(json: &str, files: &Files, apps: AppSet) -> Result<Cluster, Scenario
     let config = ClusterConfig {
         images: scenario.images,
         apps,
+        closed_catalog: scenario.image_catalog == ImageCatalog::Closed,
     };
     Ok(Cluster {
         store,
