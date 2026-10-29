@@ -11,6 +11,7 @@ mod images;
 mod kubelet;
 mod namespace;
 mod pods;
+mod probes;
 mod replicaset;
 mod scheduler;
 mod service;

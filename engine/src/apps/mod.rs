@@ -692,7 +692,7 @@ mod server_tests {
 
     fn responder() -> ImageSpec {
         ImageSpec {
-            app: Some("http-responder@0.1.0".into()),
+            app: Some("http-responder@0.2.0".into()),
             config: json!({"name": "informant", "version": "1.2", "portEnv": "PORT"}),
             ..ImageSpec::default()
         }

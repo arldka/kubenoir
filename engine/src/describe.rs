@@ -482,6 +482,36 @@ fn indented(text: &str, by: usize) -> Vec<String> {
     text.lines().map(|l| format!("{}{l}", " ".repeat(by))).collect()
 }
 
+/// `http-get http://:8080/healthz delay=0s timeout=1s period=10s #success=1 #failure=3`
+fn probe_line(probe: &k8s_openapi::api::core::v1::Probe) -> String {
+    let port = |p: &IntOrString| match p {
+        IntOrString::Int(n) => n.to_string(),
+        IntOrString::String(s) => s.clone(),
+    };
+    let action = if let Some(http) = &probe.http_get {
+        let scheme = http.scheme.as_deref().unwrap_or("HTTP").to_lowercase();
+        format!(
+            "http-get {scheme}://:{}{}",
+            port(&http.port),
+            http.path.as_deref().unwrap_or("/")
+        )
+    } else if let Some(tcp) = &probe.tcp_socket {
+        format!("tcp-socket :{}", port(&tcp.port))
+    } else if let Some(exec) = &probe.exec {
+        format!("exec [{}]", exec.command.clone().unwrap_or_default().join(" "))
+    } else {
+        "<none>".into()
+    };
+    format!(
+        "{action} delay={}s timeout={}s period={}s #success={} #failure={}",
+        probe.initial_delay_seconds.unwrap_or(0),
+        probe.timeout_seconds.unwrap_or(1),
+        probe.period_seconds.unwrap_or(10),
+        probe.success_threshold.unwrap_or(1),
+        probe.failure_threshold.unwrap_or(3)
+    )
+}
+
 /// Container details at indent 4. With a `status` this is a live pod container; without one it
 /// is a pod template (as shown in `describe deployment`).
 fn container_lines(out: &mut Vec<String>, c: &Container, status: Option<&ContainerStatus>) {
@@ -529,6 +559,16 @@ fn container_lines(out: &mut Vec<String>, c: &Container, status: Option<&Contain
             &status.restart_count.to_string(),
             value_col,
         ));
+    }
+
+    for (label, probe) in [
+        ("Liveness:", c.liveness_probe.as_ref()),
+        ("Readiness:", c.readiness_probe.as_ref()),
+        ("Startup:", c.startup_probe.as_ref()),
+    ] {
+        if let Some(probe) = probe {
+            out.push(kv(INDENT, label, &probe_line(probe), value_col));
+        }
     }
 
     match c.env.as_deref() {

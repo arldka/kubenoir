@@ -20,6 +20,7 @@ use k8s_openapi::api::core::v1::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::probes::{self, Plan};
 use super::volumes::{self, VolumeState};
 use super::{container_env, images, pod_identity, pods, Env};
 use crate::apps::{self, Launch, Mount, Program, VolEvent};
@@ -37,7 +38,6 @@ const RETRY_SECS: i64 = 10;
 /// A container counts as Ready once it has been running this long. Combined with exits winning
 /// ties, a process that dies within a second never flaps Ready, so rollouts of a crashing
 /// image stall exactly as they do on a real cluster.
-const READY_DELAY_SECS: i64 = 1;
 /// A failed pull shows as `ErrImagePull` for this long, then as `ImagePullBackOff` until the
 /// next attempt.
 const ERR_IMAGE_PULL_SECS: i64 = 5;
@@ -98,6 +98,11 @@ struct Runtime {
     /// container: no image pull, no start.
     #[serde(default)]
     awaiting_volumes: bool,
+    /// What the probes will do in this run (see `probes`).
+    #[serde(default)]
+    plan: Plan,
+    #[serde(default)]
+    unhealthy_emitted: usize,
 }
 
 enum Step {
@@ -105,6 +110,7 @@ enum Step {
     Line(usize),
     Exit,
     Ready,
+    Unhealthy(usize),
 }
 
 impl Runtime {
@@ -127,6 +133,8 @@ impl Runtime {
             env: BTreeMap::new(),
             mounts: Vec::new(),
             awaiting_volumes: false,
+            plan: Plan::default(),
+            unhealthy_emitted: 0,
         }
     }
 
@@ -150,7 +158,12 @@ impl Runtime {
                     consider((self.started_at + at, 1, Step::Exit));
                 }
                 if !self.ready {
-                    consider((self.started_at + READY_DELAY_SECS, 2, Step::Ready));
+                    if let Some(at) = self.plan.ready_at {
+                        consider((self.started_at + at, 2, Step::Ready));
+                    }
+                }
+                if let Some((at, _, _)) = self.plan.unhealthy.get(self.unhealthy_emitted) {
+                    consider((self.started_at + at, 0, Step::Unhealthy(self.unhealthy_emitted)));
                 }
                 best.map(|(at, _, step)| (at, step))
             }
@@ -469,19 +482,18 @@ fn apply(
             // What the app can reach is what the cluster is at this moment (V32).
             let source = serde_json::to_value(&ctx.pod).unwrap_or_default();
             let oracle = oracle(ctx.env, &source);
-            rt.program = apps::run(
-                &ctx.env.config.apps,
-                ctx.env.config.images.get(&image),
-                &Launch {
-                    image: &image,
-                    env: &resolved.env,
-                    started_at: t,
-                    seed: seed_of(ctx, &container.name, rt.instance),
-                    mounts: &mounts,
-                    timeline: &timeline,
-                    net: apps::Net::Live(&oracle),
-                },
-            );
+            let launch = Launch {
+                image: &image,
+                env: &resolved.env,
+                started_at: t,
+                seed: seed_of(ctx, &container.name, rt.instance),
+                mounts: &mounts,
+                timeline: &timeline,
+                net: apps::Net::Live(&oracle),
+            };
+            let program = apps::run(&ctx.env.config.apps, ctx.env.config.images.get(&image), &launch);
+            (rt.program, rt.plan) = probed(ctx, container, &launch, program);
+            rt.unhealthy_emitted = 0;
             rt.env = resolved.env.clone();
             rt.mounts = mounts;
             rt.phase = Phase::Running;
@@ -536,7 +548,24 @@ fn apply(
             rt.lines_emitted += 1;
         }
         Step::Ready => rt.ready = true,
+        Step::Unhealthy(index) => {
+            let (_, kind, reason) = rt.plan.unhealthy[index].clone();
+            ctx.event(
+                Some(&container.name),
+                EventType::Warning,
+                "Unhealthy",
+                &format!("{kind} probe failed: {reason}"),
+                t,
+            )?;
+            rt.unhealthy_emitted += 1;
+        }
         Step::Exit => {
+            if let Some((at, probe)) = rt.plan.kill.clone() {
+                if rt.program.exit == Some((at, probes::KILLED)) {
+                    let message = format!("Container {} failed {probe} probe, will be restarted", container.name);
+                    ctx.event(Some(&container.name), EventType::Normal, "Killing", &message, t)?;
+                }
+            }
             rt.ready = false;
             let code = rt.program.exit.map_or(0, |(_, code)| code);
             rt.last = Some(Terminated {
@@ -561,6 +590,41 @@ fn apply(
         }
     }
     Ok(())
+}
+
+/// Put a fresh run through the container's probes: when it becomes ready, which failed probes
+/// are reported, and the kill that a failing liveness or startup probe brings forward.
+fn probed(ctx: &PodCtx<'_>, container: &Container, launch: &Launch<'_>, mut program: Program) -> (Program, Plan) {
+    let ask = |method: &str, path: &str| {
+        apps::request(
+            &ctx.env.config.apps,
+            ctx.env.config.images.get(launch.image),
+            launch,
+            method,
+            path,
+        )
+    };
+    let pod_ip = ctx
+        .pod
+        .status
+        .as_ref()
+        .and_then(|s| s.pod_ip.clone())
+        .unwrap_or_default();
+    let plan = probes::plan(
+        container,
+        &probes::Subject {
+            program: &program,
+            pod_ip: &pod_ip,
+            ask: &ask,
+        },
+    );
+    if let Some((at, _)) = &plan.kill {
+        if program.exit.is_none_or(|(exit, _)| exit > *at) {
+            program.exit = Some((*at, probes::KILLED));
+            program.lines.retain(|(line, _)| line <= at);
+        }
+    }
+    (program, plan)
 }
 
 /// Seeds a container's run: the same for the same pod, container and restart.
@@ -599,24 +663,22 @@ fn settle(
             }
             let image = container.image.clone().unwrap_or_default();
             let timeline = vols.timeline(&peer_writes(runtimes, &container.name));
-            let program = apps::run(
-                &ctx.env.config.apps,
-                ctx.env.config.images.get(&image),
-                &Launch {
-                    image: &image,
-                    env: &rt.env,
-                    started_at: rt.started_at,
-                    seed: seed_of(ctx, &container.name, rt.instance),
-                    mounts: &rt.mounts,
-                    timeline: &timeline,
-                    // The run keeps what it was told when it started; only the files change.
-                    net: apps::Net::Replay(&rt.program.calls),
-                },
-            );
-            if program != rt.program {
+            let launch = Launch {
+                image: &image,
+                env: &rt.env,
+                started_at: rt.started_at,
+                seed: seed_of(ctx, &container.name, rt.instance),
+                mounts: &rt.mounts,
+                timeline: &timeline,
+                // The run keeps what it was told when it started; only the files change.
+                net: apps::Net::Replay(&rt.program.calls),
+            };
+            let program = apps::run(&ctx.env.config.apps, ctx.env.config.images.get(&image), &launch);
+            let (program, plan) = probed(ctx, container, &launch, program);
+            if program != rt.program || plan != rt.plan {
                 let rt = runtimes.get_mut(&container.name).expect("just read");
                 writes_changed |= program.writes != rt.program.writes;
-                rt.program = program;
+                (rt.program, rt.plan) = (program, plan);
                 any = true;
             }
         }

@@ -98,7 +98,9 @@ A healthy nginx. It prints its start-up lines and serves forever. It takes no co
 A small web service. It logs `<name> <version> starting (pid 1)`, then `listening on :<port>`, and
 serves: `/` answers its banner, `/healthz` answers `ok`, anything else 404. The port is the
 environment variable named by `portEnv` (default `defaultPort`, 8080); a value that is not a number
-makes it exit 1. Config: `name`, `version`, `portEnv`, `defaultPort`.
+makes it exit 1. `WARMUP_SECS` (environment) makes it load for that long before it listens, which
+is what a probe that fires too early trips over. For `exec` probes it understands the command
+`true`. Config: `name`, `version`, `portEnv`, `defaultPort`.
 
 ### `watcher`
 

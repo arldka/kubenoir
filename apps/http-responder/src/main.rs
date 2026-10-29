@@ -31,9 +31,21 @@ fn main() {
     if !kit::answering_request() {
         kit::info(&format!("{} {} starting (pid 1)", config.name, config.version));
         kit::sleep(1);
+        // A slow starter: `WARMUP_SECS` of loading before it accepts connections.
+        let warmup = std::env::var("WARMUP_SECS")
+            .ok()
+            .and_then(|w| w.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if warmup > 0 {
+            kit::info(&format!("warming up ({warmup}s)"));
+            kit::sleep(warmup);
+        }
         kit::info(&format!("listening on :{port}"));
     }
     kit::serve(port, |request: &Request| match request.path.as_str() {
+        // `exec` probes: the one command this server understands.
+        "true" if request.method == "EXEC" => Response::new(200, ""),
+        _ if request.method == "EXEC" => Response::new(500, "executable file not found in $PATH"),
         "/" => Response::new(200, &format!("{} {}", config.name, config.version)),
         "/healthz" => Response::new(200, "ok"),
         _ => Response::new(404, "not found"),

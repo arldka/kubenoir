@@ -4,7 +4,7 @@
 use engine::{AppSet, Engine, Files};
 
 const SCENARIO: &str = r#"{"schemaVersion":2,"id":"netpol","cluster":{"now":"2026-10-27T18:30:00Z","manifests":["nodes.yaml"]},
-    "images":{"informant:1":{"pullSeconds":1,"app":"http-responder@0.1.0","config":{"name":"informant","version":"1.2","portEnv":"PORT"}},
+    "images":{"informant:1":{"pullSeconds":1,"app":"http-responder@0.2.0","config":{"name":"informant","version":"1.2","portEnv":"PORT"}},
               "toolbox:1":{"pullSeconds":1,"app":"nginx@0.1.0","config":{}}}}"#;
 
 fn engine() -> Engine {
