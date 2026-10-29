@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::clock;
 use crate::controllers::Env;
 use crate::describe::describe;
+use crate::judge::Touched;
 use crate::logs::logs;
 use crate::manifests::{self, Files};
 use crate::mutate;
@@ -14,19 +15,22 @@ use crate::render::render;
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
-pub fn execute(command: &Command, env: &Env<'_>, files: &Files) -> String {
+/// Run a command: what to print, and the objects it wrote or deleted when it acts on files.
+pub fn execute(command: &Command, env: &Env<'_>, files: &Files) -> (String, Vec<Touched>) {
+    let printed = |text: String| (text, Vec::new());
+    let written = |w: manifests::Written| (w.output, w.touched);
     let result = match command {
-        Command::Get(args) => get(args, env.store, &clock::to_time(env.now)),
-        Command::Describe(args) => describe(args, env.store, env.now),
-        Command::Logs(args) => logs(args, env.store),
-        Command::SetEnv(args) => mutate::set_env(args, env),
-        Command::RolloutRestart(args) => mutate::rollout_restart(args, env),
-        Command::Delete(args) => mutate::delete(args, env),
-        Command::Apply(args) => manifests::apply(args, env, files),
-        Command::Create(args) => manifests::create(args, env, files),
-        Command::DeleteFiles(args) => manifests::delete(args, env, files),
+        Command::Get(args) => get(args, env.store, &clock::to_time(env.now)).map(printed),
+        Command::Describe(args) => describe(args, env.store, env.now).map(printed),
+        Command::Logs(args) => logs(args, env.store).map(printed),
+        Command::SetEnv(args) => mutate::set_env(args, env).map(printed),
+        Command::RolloutRestart(args) => mutate::rollout_restart(args, env).map(printed),
+        Command::Delete(args) => mutate::delete(args, env).map(printed),
+        Command::Apply(args) => manifests::apply(args, env, files).map(written),
+        Command::Create(args) => manifests::create(args, env, files).map(written),
+        Command::DeleteFiles(args) => manifests::delete(args, env, files).map(written),
     };
-    result.unwrap_or_else(|e| format!("error: {e}"))
+    result.unwrap_or_else(|e| (format!("error: {e}"), Vec::new()))
 }
 
 fn get(args: &GetArgs, store: &ClusterStore, now: &Time) -> Result<String, StoreError> {
@@ -85,7 +89,7 @@ mod tests {
             config: &cluster.config,
             now: clock::secs(&cluster.now),
         };
-        execute(&parse(cmd).unwrap(), &env, &Files::new())
+        execute(&parse(cmd).unwrap(), &env, &Files::new()).0
     }
 
     #[test]

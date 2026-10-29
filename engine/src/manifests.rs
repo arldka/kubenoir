@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 
 use crate::api::{self, ApiError, Origin};
 use crate::controllers::Env;
+use crate::judge::Touched;
 use crate::mutate::delete_object;
 use crate::parser::ManifestArgs;
 use crate::scenario::DEFAULT_NAMESPACE;
@@ -131,44 +132,68 @@ fn write_error(doc: &Doc<'_>, verb: &str, error: &ApiError) -> String {
     }
 }
 
-/// Successes, then errors: the order kubectl prints them in.
-fn report(lines: Vec<String>, errors: Vec<String>) -> String {
-    lines.into_iter().chain(errors).collect::<Vec<_>>().join("\n")
+/// What a file command printed, and the objects it wrote or deleted.
+pub struct Written {
+    pub output: String,
+    pub touched: Vec<Touched>,
 }
 
-pub fn create(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<String, StoreError> {
+impl Written {
+    fn message(output: String) -> Self {
+        Written {
+            output,
+            touched: Vec::new(),
+        }
+    }
+
+    /// Successes, then errors: the order kubectl prints them in.
+    fn report(lines: Vec<String>, errors: Vec<String>, touched: Vec<Touched>) -> Self {
+        Written {
+            output: lines.into_iter().chain(errors).collect::<Vec<_>>().join("\n"),
+            touched,
+        }
+    }
+}
+
+pub fn create(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Written, StoreError> {
     let docs = match read_docs(args, files) {
         Ok(docs) => docs,
-        Err(message) => return Ok(message),
+        Err(message) => return Ok(Written::message(message)),
     };
-    let (mut lines, mut errors) = (Vec::new(), Vec::new());
+    let (mut lines, mut errors, mut touched) = (Vec::new(), Vec::new(), Vec::new());
     for doc in &docs {
         match api::create(env.store, &doc.manifest, &doc.namespace, env.now, Origin::Client) {
-            Ok(created) => lines.push(format!("{}/{} created", created.info.name_prefix(), created.name)),
+            Ok(created) => {
+                lines.push(format!("{}/{} created", created.info.name_prefix(), created.name));
+                touched.push((created.info.kind, created.name));
+            }
             Err(e) => errors.push(write_error(doc, "creating", &e)),
         }
     }
-    Ok(report(lines, errors))
+    Ok(Written::report(lines, errors, touched))
 }
 
-pub fn apply(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<String, StoreError> {
+pub fn apply(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Written, StoreError> {
     let docs = match read_docs(args, files) {
         Ok(docs) => docs,
-        Err(message) => return Ok(message),
+        Err(message) => return Ok(Written::message(message)),
     };
-    let (mut lines, mut errors) = (Vec::new(), Vec::new());
+    let (mut lines, mut errors, mut touched) = (Vec::new(), Vec::new(), Vec::new());
     for doc in &docs {
         match apply_one(doc, env) {
-            Ok(mut out) => lines.append(&mut out),
+            Ok((mut out, kind)) => {
+                lines.append(&mut out);
+                touched.push((kind, doc.name().to_string()));
+            }
             Err((verb, e)) => errors.push(write_error(doc, verb, &e)),
         }
     }
-    Ok(report(lines, errors))
+    Ok(Written::report(lines, errors, touched))
 }
 
 /// Apply one document: create it, or three-way merge it into what is stored. A failure says
 /// which of the two it was (`creating` / `patching`).
-fn apply_one(doc: &Doc<'_>, env: &Env<'_>) -> Result<Vec<String>, (&'static str, ApiError)> {
+fn apply_one(doc: &Doc<'_>, env: &Env<'_>) -> Result<(Vec<String>, &'static str), (&'static str, ApiError)> {
     let creating = |e| ("creating", e);
     let kind = doc.manifest["kind"].as_str().unwrap_or_default();
     let api_version = doc.manifest["apiVersion"].as_str().unwrap_or_default();
@@ -214,7 +239,10 @@ fn apply_one(doc: &Doc<'_>, env: &Env<'_>) -> Result<Vec<String>, (&'static str,
         .map_err(|e| creating(e.into()))?;
     let Some(live) = live else {
         let created = api::create(env.store, &desired, &doc.namespace, env.now, Origin::Client).map_err(creating)?;
-        return Ok(vec![format!("{}/{} created", info.name_prefix(), created.name)]);
+        return Ok((
+            vec![format!("{}/{} created", info.name_prefix(), created.name)],
+            info.kind,
+        ));
     };
 
     let mut out = Vec::new();
@@ -233,7 +261,7 @@ fn apply_one(doc: &Doc<'_>, env: &Env<'_>) -> Result<Vec<String>, (&'static str,
     let updated = api::update(env.store, &merged, &doc.namespace).map_err(|e| ("patching", e))?;
     let verb = if updated.changed { "configured" } else { "unchanged" };
     out.push(format!("{}/{} {verb}", info.name_prefix(), updated.name));
-    Ok(out)
+    Ok((out, info.kind))
 }
 
 /// Merge `desired` into `live` the way `kubectl apply` does for plain JSON: fields of `desired`
@@ -262,12 +290,12 @@ fn three_way_merge(live: &mut Value, last: Option<&Value>, desired: &Value) {
     }
 }
 
-pub fn delete(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<String, StoreError> {
+pub fn delete(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Written, StoreError> {
     let docs = match read_docs(args, files) {
         Ok(docs) => docs,
-        Err(message) => return Ok(message),
+        Err(message) => return Ok(Written::message(message)),
     };
-    let (mut lines, mut errors) = (Vec::new(), Vec::new());
+    let (mut lines, mut errors, mut touched) = (Vec::new(), Vec::new(), Vec::new());
     for doc in &docs {
         let kind = doc.manifest["kind"].as_str().unwrap_or_default();
         let api_version = doc.manifest["apiVersion"].as_str().unwrap_or_default();
@@ -286,6 +314,7 @@ pub fn delete(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Strin
         let namespace = if info.namespaced { doc.namespace.as_str() } else { "" };
         if delete_object(env, info.kind, namespace, doc.name(), false)? {
             lines.push(format!("{} \"{}\" deleted", info.name_prefix(), doc.name()));
+            touched.push((info.kind, doc.name().to_string()));
         } else {
             let error = ApiError::NotFound {
                 resource: info.resource(),
@@ -294,5 +323,5 @@ pub fn delete(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Strin
             errors.push(write_error(doc, "deleting", &error));
         }
     }
-    Ok(report(lines, errors))
+    Ok(Written::report(lines, errors, touched))
 }

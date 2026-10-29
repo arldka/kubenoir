@@ -15,12 +15,21 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::api;
 use crate::parser::{Command, ResourceKind};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
-const KINDS: [&str; 4] = ["Pod", "Deployment", "ReplicaSet", "Event"];
-const VERBS: [&str; 6] = ["get", "describe", "logs", "set-env", "rollout-restart", "delete"];
+const VERBS: [&str; 8] = [
+    "get",
+    "describe",
+    "logs",
+    "set-env",
+    "rollout-restart",
+    "delete",
+    "apply",
+    "create",
+];
 const DEFAULT_STABLE_SECS: i64 = 15;
 
 // ---- scenario data --------------------------------------------------------------------------
@@ -63,7 +72,7 @@ pub struct Cond {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandMatcher {
-    /// `get`, `describe`, `logs`, `set-env`, `rollout-restart` or `delete`.
+    /// `get`, `describe`, `logs`, `set-env`, `rollout-restart`, `delete`, `apply` or `create`.
     pub verb: String,
     /// Resource kind as kubectl names it (`pods`, `deploy`, ...).
     pub resource: Option<String>,
@@ -173,11 +182,12 @@ fn validate_rule(rule: &Rule) -> Result<(), String> {
         return Err("needs a `label`".into());
     }
     if let Some(select) = &rule.select {
-        if !KINDS.contains(&select.kind.as_str()) {
+        if !api::kinds().iter().any(|k| k.kind == select.kind) {
+            let known: Vec<&str> = api::kinds().iter().map(|k| k.kind).collect();
             return Err(format!(
                 "unknown kind {:?} (expected {})",
                 select.kind,
-                KINDS.join(", ")
+                known.join(", ")
             ));
         }
     }
@@ -213,7 +223,7 @@ fn validate_matcher(matcher: &CommandMatcher) -> Result<(), String> {
         ));
     }
     if let Some(resource) = &matcher.resource {
-        ResourceKind::from_arg(resource).map_err(|_| format!("unknown resource {resource:?}"))?;
+        api::kind_for_arg(resource).ok_or_else(|| format!("unknown resource {resource:?}"))?;
     }
     Ok(())
 }
@@ -352,7 +362,15 @@ fn cond_holds(cond: &Cond, manifest: &Value) -> bool {
 // ---- evaluating rules against the cluster ---------------------------------------------------
 
 fn select(store: &ClusterStore, select: &Select) -> Result<Vec<Value>, StoreError> {
-    let namespace = select.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
+    // Cluster-scoped kinds (Node, Namespace) are stored outside any namespace.
+    let namespaced = api::kinds()
+        .iter()
+        .find(|k| k.kind == select.kind)
+        .is_none_or(|k| k.namespaced);
+    let namespace = match namespaced {
+        true => select.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE),
+        false => "",
+    };
     let candidates = match &select.name {
         Some(name) => store.get(&select.kind, namespace, name)?.into_iter().collect(),
         None => store.list(&select.kind, namespace)?,
@@ -395,12 +413,28 @@ fn glob(pattern: &str, name: &str) -> bool {
     }
 }
 
-fn matches_command(matcher: &CommandMatcher, command: &Command) -> bool {
-    let kind = matcher.resource.as_deref().and_then(|r| ResourceKind::from_arg(r).ok());
-    let wanted = |resource: ResourceKind| kind.is_none_or(|k| k == resource);
+/// An object a command wrote or deleted: `(kind, name)`.
+pub type Touched = (&'static str, String);
+
+/// Commands that act on the objects in files; they are judged by what they actually touched.
+fn is_file_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Apply(_) | Command::Create(_) | Command::DeleteFiles(_)
+    )
+}
+
+fn matches_command(matcher: &CommandMatcher, command: &Command, touched: &[Touched]) -> bool {
+    let kind = matcher.resource.as_deref().and_then(api::kind_for_arg).map(|k| k.kind);
+    let wanted = |resource: ResourceKind| kind.is_none_or(|k| k == resource.kind());
     let named = |names: &[&str]| match &matcher.name {
         None => true,
         Some(pattern) => names.iter().any(|n| glob(pattern, n)),
+    };
+    let touched_one = || {
+        touched.iter().any(|(k, name)| {
+            kind.is_none_or(|want| want == *k) && matcher.name.as_deref().is_none_or(|p| glob(p, name))
+        })
     };
 
     match (matcher.verb.as_str(), command) {
@@ -420,14 +454,17 @@ fn matches_command(matcher: &CommandMatcher, command: &Command) -> bool {
         ("delete", Command::Delete(a)) => {
             wanted(a.resource) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
         }
+        ("delete", Command::DeleteFiles(_)) | ("apply", Command::Apply(_)) | ("create", Command::Create(_)) => {
+            touched_one()
+        }
         _ => false,
     }
 }
 
-fn when_matches(when: &When, command: &Command) -> bool {
+fn when_matches(when: &When, command: &Command, touched: &[Touched]) -> bool {
     match (&when.command, &when.any_of) {
-        (Some(matcher), _) => matches_command(matcher, command),
-        (None, Some(any)) => any.iter().any(|w| when_matches(w, command)),
+        (Some(matcher), _) => matches_command(matcher, command, touched),
+        (None, Some(any)) => any.iter().any(|w| when_matches(w, command, touched)),
         (None, None) => false,
     }
 }
@@ -578,18 +615,24 @@ impl Judge {
         }
     }
 
-    /// Note a command the player ran (it parsed) and what it printed.
-    pub fn record_command(&mut self, command: &Command, output: &str, now: i64) {
+    /// Note a command the player ran (it parsed), the objects it wrote or deleted (for commands
+    /// that act on files) and what it printed.
+    pub fn record_command(&mut self, command: &Command, touched: &[Touched], output: &str, now: i64) {
         if self.started_at.is_none() || self.solved.is_some() {
             return;
         }
         self.commands += 1;
-        if is_error_output(output) {
+        // A file command that failed for some documents still did what it did to the others.
+        if is_file_command(command) {
+            if touched.is_empty() {
+                return;
+            }
+        } else if is_error_output(output) {
             return;
         }
 
         for (i, finding) in self.rules.findings.iter().enumerate() {
-            if !self.found.iter().any(|(f, _)| *f == i) && when_matches(&finding.when, command) {
+            if !self.found.iter().any(|(f, _)| *f == i) && when_matches(&finding.when, command, touched) {
                 self.found.push((i, now));
             }
         }
@@ -598,7 +641,11 @@ impl Judge {
             .iter()
             .enumerate()
             .filter(|(i, rule)| {
-                !self.broken.contains_key(i) && rule.forbid.as_ref().is_some_and(|m| matches_command(m, command))
+                !self.broken.contains_key(i)
+                    && rule
+                        .forbid
+                        .as_ref()
+                        .is_some_and(|m| matches_command(m, command, touched))
             })
             .map(|(i, _)| i)
             .collect();
@@ -802,7 +849,7 @@ mod tests {
 
     #[test]
     fn matches_parsed_commands() {
-        let m = |v: Value, line: &str| matches_command(&matcher(v), &parse(line).unwrap());
+        let m = |v: Value, line: &str| matches_command(&matcher(v), &parse(line).unwrap(), &[]);
         assert!(m(
             json!({"verb": "logs", "name": "payments-api*"}),
             "kubectl logs payments-api-abc-123"
@@ -949,7 +996,7 @@ mod tests {
         assert!(err(finding("f", json!({}))).contains("exactly one of"));
         assert!(err(finding("f", json!({"anyOf": []}))).contains("exactly one of"));
         assert!(
-            err(finding("f", json!({"command": {"verb": "get", "resource": "nodes"}}))).contains("unknown resource")
+            err(finding("f", json!({"command": {"verb": "get", "resource": "widgets"}}))).contains("unknown resource")
         );
         assert!(err(json!({"findings": [
             {"id": "f", "clue": "c", "when": {"command": {"verb": "get"}}},
@@ -959,6 +1006,110 @@ mod tests {
             err(json!({"findings": [{"id": "f", "clue": " ", "when": {"command": {"verb": "get"}}}]}))
                 .contains("needs a `clue`")
         );
+    }
+
+    #[test]
+    fn every_registered_kind_and_file_verb_is_accepted() {
+        for kind in ["Node", "Namespace", "ConfigMap", "Secret", "Service"] {
+            assert!(
+                rules(json!({"success": {"assert": [{"label": "a", "select": {"kind": kind}}]}})).is_ok(),
+                "{kind}"
+            );
+        }
+        let err = rules(json!({"success": {"assert": [{"label": "a", "select": {"kind": "Pods"}}]}})).unwrap_err();
+        assert!(
+            err.contains("(expected ConfigMap, Deployment, Event, Namespace, Node, Pod"),
+            "{err}"
+        );
+        for verb in ["apply", "create", "delete"] {
+            let finding = json!({"findings": [{"id": "f", "clue": "c",
+                "when": {"command": {"verb": verb, "resource": "cm", "name": "dossier"}}}]});
+            assert!(rules(finding).is_ok(), "{verb}");
+        }
+    }
+
+    #[test]
+    fn cluster_scoped_kinds_are_selected_without_a_namespace() {
+        let store = ClusterStore::new().unwrap();
+        crate::api::seed_system_namespaces(&store, 0).unwrap();
+        let rule: Rule = serde_json::from_value(json!({"label": "homicide exists",
+            "select": {"kind": "Namespace", "name": "homicide"}}))
+        .unwrap();
+        assert!(!holds(&rule, &store, 1).unwrap());
+        crate::api::create(
+            &store,
+            &json!({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "homicide"}}),
+            "default",
+            0,
+            crate::api::Origin::Client,
+        )
+        .unwrap();
+        assert!(holds(&rule, &store, 1).unwrap());
+    }
+
+    #[test]
+    fn file_commands_match_the_objects_they_touched() {
+        let m =
+            |v: Value, line: &str, touched: &[Touched]| matches_command(&matcher(v), &parse(line).unwrap(), touched);
+        let web = [("Deployment", "web".to_string())];
+        assert!(m(
+            json!({"verb": "apply", "resource": "deploy", "name": "web"}),
+            "kubectl apply -f a.yaml",
+            &web
+        ));
+        assert!(m(
+            json!({"verb": "apply", "name": "w*"}),
+            "kubectl apply -f a.yaml",
+            &web
+        ));
+        assert!(!m(
+            json!({"verb": "apply", "resource": "pods"}),
+            "kubectl apply -f a.yaml",
+            &web
+        ));
+        assert!(!m(json!({"verb": "apply"}), "kubectl apply -f a.yaml", &[]));
+        assert!(!m(json!({"verb": "create"}), "kubectl apply -f a.yaml", &web));
+        assert!(m(
+            json!({"verb": "create", "resource": "deployments.apps"}),
+            "kubectl create -f a.yaml",
+            &web
+        ));
+        assert!(m(
+            json!({"verb": "delete", "resource": "deployment", "name": "web"}),
+            "kubectl delete -f a.yaml",
+            &web
+        ));
+        assert!(m(
+            json!({"verb": "delete", "resource": "deployment", "name": "web"}),
+            "kubectl delete deploy web",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn a_partly_failed_file_delete_still_breaks_a_forbid() {
+        let mut j = judge(json!([{"label": "keep web",
+            "forbid": {"verb": "delete", "resource": "deployment", "name": "web"}}]));
+        j.record_command(
+            &parse("kubectl delete -f all.yaml").unwrap(),
+            &[("Deployment", "web".to_string())],
+            "deployment.apps \"web\" deleted\nError from server (NotFound): error when deleting \"all.yaml\": pods \"x\" not found",
+            1001,
+        );
+        j.observe(&pod("Running"), 1002);
+        j.observe(&pod("Running"), 1012);
+        assert_eq!(j.status(1012).outcome, Some("closedWithCost"));
+
+        let mut j = judge(json!([{"label": "keep web", "forbid": {"verb": "delete", "name": "web"}}]));
+        j.record_command(
+            &parse("kubectl delete -f all.yaml").unwrap(),
+            &[],
+            "Error from server (NotFound): error when deleting \"all.yaml\": deployments.apps \"web\" not found",
+            1001,
+        );
+        j.observe(&pod("Running"), 1002);
+        j.observe(&pod("Running"), 1012);
+        assert_eq!(j.status(1012).outcome, Some("closed"));
     }
 
     // ---- the state machine, driven directly --------------------------------------------------
@@ -1033,7 +1184,7 @@ mod tests {
         j.observe(&pod("Running"), 1010);
         let before = serde_json::to_string(&j.status(1010)).unwrap();
         j.observe(&pod("Failed"), 1500);
-        j.record_command(&parse("kubectl logs a").unwrap(), "x", 1501);
+        j.record_command(&parse("kubectl logs a").unwrap(), &[], "x", 1501);
         let after = j.status(1500);
         assert!(after.solved && after.findings.found.is_empty());
         assert_eq!(after.solved_at_seconds, Some(10));
@@ -1068,6 +1219,7 @@ mod tests {
         let mut j = judge(json!([{"label": "never delete", "forbid": {"verb": "delete"}}]));
         j.record_command(
             &parse("kubectl delete pod x").unwrap(),
+            &[],
             "Error from server (NotFound): pods \"x\" not found",
             1001,
         );
@@ -1076,7 +1228,7 @@ mod tests {
         assert_eq!(j.status(1012).outcome, Some("closed"));
 
         let mut j = judge(json!([{"label": "never delete", "forbid": {"verb": "delete"}}]));
-        j.record_command(&parse("kubectl delete pod x").unwrap(), "pod \"x\" deleted", 1001);
+        j.record_command(&parse("kubectl delete pod x").unwrap(), &[], "pod \"x\" deleted", 1001);
         j.observe(&pod("Running"), 1002);
         j.observe(&pod("Running"), 1012);
         assert_eq!(j.status(1012).outcome, Some("closedWithCost"));
@@ -1087,15 +1239,16 @@ mod tests {
         let mut j = judge(json!([]));
         j.record_command(
             &parse("kubectl logs nope").unwrap(),
+            &[],
             "Error from server (NotFound): pods \"nope\" not found",
             1003,
         );
         assert!(j.status(1003).findings.found.is_empty());
         assert_eq!(j.status(1003).commands, 1);
-        j.record_command(&parse("kubectl get pods").unwrap(), "NAME", 1004);
+        j.record_command(&parse("kubectl get pods").unwrap(), &[], "NAME", 1004);
         assert!(j.status(1004).findings.found.is_empty());
-        j.record_command(&parse("kubectl logs a").unwrap(), "line", 1007);
-        j.record_command(&parse("kubectl logs a").unwrap(), "line", 1009);
+        j.record_command(&parse("kubectl logs a").unwrap(), &[], "line", 1007);
+        j.record_command(&parse("kubectl logs a").unwrap(), &[], "line", 1009);
         let status = j.status(1009);
         assert_eq!(status.findings.total, 1);
         assert_eq!(status.findings.found.len(), 1);
@@ -1113,7 +1266,7 @@ mod tests {
     #[test]
     fn nothing_counts_before_the_player_starts() {
         let mut j = Judge::new(Rules::default());
-        j.record_command(&parse("kubectl get pods").unwrap(), "x", 1);
+        j.record_command(&parse("kubectl get pods").unwrap(), &[], "x", 1);
         assert_eq!(j.status(1).commands, 0);
         let mut j = judge(json!([]));
         j.started_at = None;

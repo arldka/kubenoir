@@ -159,7 +159,7 @@ impl Engine {
     pub fn eval(&mut self, cmd: &str) -> String {
         match parse(cmd) {
             Ok(command) => {
-                let out = execute(
+                let (out, touched) = execute(
                     &command,
                     &Env {
                         store: &self.store,
@@ -168,7 +168,7 @@ impl Engine {
                     },
                     &self.files,
                 );
-                self.judge.record_command(&command, &out, self.now);
+                self.judge.record_command(&command, &touched, &out, self.now);
                 // Commands may have changed desired state; let the cluster react right away.
                 self.reconcile();
                 self.judge.observe(&self.store, self.now);

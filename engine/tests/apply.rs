@@ -283,3 +283,26 @@ fn flags_kubectl_rejects_or_this_terminal_does_not_offer() {
         "error: the path \"missing.yaml\" does not exist"
     );
 }
+
+#[test]
+fn applying_a_file_unlocks_findings_about_the_objects_in_it() {
+    let scenario = r#"{"schemaVersion":2,"id":"apply","cluster":{"now":"2026-10-27T18:30:00Z","manifests":["nodes.yaml"]},
+        "findings":[{"id":"deployed","clue":"web is out there","when":{"command":{"verb":"apply","resource":"deploy","name":"web"}}}]}"#;
+    let files = Files::from([("nodes.yaml".to_string(), NODES.to_string())]);
+    let mut e = Engine::from_scenario(scenario, &files, AppSet::bundled()).unwrap();
+    let found = |e: &Engine| {
+        serde_json::to_value(e.status()).unwrap()["findings"]["found"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    e.write_file(
+        "other.yaml",
+        "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: other\n",
+    );
+    e.eval("kubectl apply -f other.yaml");
+    assert_eq!(found(&e), 0);
+    e.write_file("web.yaml", WEB);
+    e.eval("kubectl apply -f web.yaml");
+    assert_eq!(found(&e), 1);
+}

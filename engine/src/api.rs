@@ -101,15 +101,12 @@ static KINDS: [KindInfo; 9] = [
 ];
 
 /// Every known kind, sorted by kind name.
-// Used by kubectl resource arguments and judge selectors (SPEC T4, T8).
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn kinds() -> &'static [KindInfo] {
     &KINDS
 }
 
 /// The kind a kubectl resource argument names: plural, singular, short name or kind, any case,
 /// optionally qualified by group (`deployments.apps`).
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn kind_for_arg(arg: &str) -> Option<&'static KindInfo> {
     let arg = arg.to_ascii_lowercase();
     let (name, group) = match arg.split_once('.') {
