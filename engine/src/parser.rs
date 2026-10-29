@@ -136,11 +136,31 @@ pub struct DeleteArgs {
     pub immediate: bool,
 }
 
-/// `-f` files for `apply`, `create` and `delete`.
+/// `-f` files for `apply`, `create`, `delete` and `replace`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestArgs {
     pub files: Vec<String>,
     pub namespace: Option<String>,
+    /// `replace --force`: delete and re-create instead of updating.
+    pub force: bool,
+}
+
+/// How `kubectl patch` reads its patch (`--type`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchType {
+    Strategic,
+    Merge,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchArgs {
+    /// The resource type as typed (any kind the API server knows; resolved when run).
+    pub resource: String,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub patch: String,
+    pub patch_type: PatchType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +174,8 @@ pub enum Command {
     Apply(ManifestArgs),
     Create(ManifestArgs),
     DeleteFiles(ManifestArgs),
+    Replace(ManifestArgs),
+    Patch(PatchArgs),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +214,11 @@ pub enum ParseError {
     /// A real kubectl feature this terminal does not offer.
     Unsupported(&'static str),
     UnexpectedArgs(Vec<String>),
+    /// `patch` without `-p`.
+    MissingPatch,
+    InvalidPatchType(String),
+    /// `--force` outside `replace`.
+    ForceWithoutReplace,
 }
 
 impl fmt::Display for ParseError {
@@ -249,6 +276,12 @@ impl fmt::Display for ParseError {
             }
             ParseError::Unsupported(what) => write!(f, "error: {what} is not available in this terminal"),
             ParseError::UnexpectedArgs(args) => write!(f, "error: Unexpected args: [{}]", args.join(" ")),
+            ParseError::MissingPatch => write!(f, "error: must specify -p to patch"),
+            ParseError::InvalidPatchType(t) => write!(
+                f,
+                "error: --type must be one of [json merge strategic], not \"{t}\""
+            ),
+            ParseError::ForceWithoutReplace => write!(f, "error: unknown flag: --force"),
         }
     }
 }
@@ -316,13 +349,15 @@ pub fn parse(input: &str) -> Result<Command, ParseError> {
         "describe" => parse_describe(&rest).map(Command::Describe),
         "logs" => parse_logs(&rest).map(Command::Logs),
         "delete" => parse_delete(&rest),
-        "apply" => parse_manifest_args(&rest).map(Command::Apply),
+        "apply" => parse_manifest_args(&rest, false).map(Command::Apply),
+        "replace" => parse_manifest_args(&rest, true).map(Command::Replace),
+        "patch" => parse_patch(&rest).map(Command::Patch),
         "create" => match rest.first() {
             Some(sub) if !is_flag(sub) => Err(ParseError::UnknownSubcommand {
                 parent: "create",
                 name: sub.to_string(),
             }),
-            _ => parse_manifest_args(&rest).map(Command::Create),
+            _ => parse_manifest_args(&rest, false).map(Command::Create),
         },
         "set" => match rest.split_first() {
             Some((&"env", args)) => parse_set_env(args).map(Command::SetEnv),
@@ -568,7 +603,11 @@ fn parse_delete(args: &[&str]) -> Result<Command, ParseError> {
         if has_positional {
             return Err(ParseError::FilesAndResources);
         }
-        return Ok(Command::DeleteFiles(ManifestArgs { files, namespace }));
+        return Ok(Command::DeleteFiles(ManifestArgs {
+            files,
+            namespace,
+            force: false,
+        }));
     }
     let (resource, names) = positional.finish("delete")?;
     if names.is_empty() {
@@ -613,17 +652,25 @@ fn take_files<'a>(
     Ok(true)
 }
 
-/// `apply` / `create`: `-f FILE...` and `-n`.
-fn parse_manifest_args(args: &[&str]) -> Result<ManifestArgs, ParseError> {
+/// `apply` / `create` / `replace`: `-f FILE...` and `-n` (and `--force` for `replace`).
+fn parse_manifest_args(args: &[&str], replace: bool) -> Result<ManifestArgs, ParseError> {
     let mut namespace: Option<String> = None;
     let mut files: Vec<String> = Vec::new();
     let mut unexpected: Vec<String> = Vec::new();
+    let mut force = false;
 
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
         if let Some(ns) = take_namespace(arg, &mut iter)? {
             namespace = Some(ns);
         } else if take_files(arg, &mut iter, &mut files)? {
+        } else if arg == "--force" {
+            if !replace {
+                return Err(ParseError::ForceWithoutReplace);
+            }
+            force = true;
+        } else if replace && take_long(arg, "--grace-period", &mut iter)?.is_some() {
+            // Accepted with --force; the simulated replace never waits anyway.
         } else if is_flag(arg) {
             return Err(unknown_flag(arg));
         } else {
@@ -636,7 +683,70 @@ fn parse_manifest_args(args: &[&str]) -> Result<ManifestArgs, ParseError> {
     if files.is_empty() {
         return Err(ParseError::MissingFilename);
     }
-    Ok(ManifestArgs { files, namespace })
+    Ok(ManifestArgs {
+        files,
+        namespace,
+        force,
+    })
+}
+
+/// `patch TYPE NAME -p PATCH [--type strategic|merge|json]` (or `TYPE/NAME`).
+fn parse_patch(args: &[&str]) -> Result<PatchArgs, ParseError> {
+    let mut positional: Vec<&str> = Vec::new();
+    let mut namespace: Option<String> = None;
+    let mut patch: Option<String> = None;
+    let mut patch_type = PatchType::Strategic;
+
+    let mut iter = args.iter().copied();
+    while let Some(arg) = iter.next() {
+        if let Some(ns) = take_namespace(arg, &mut iter)? {
+            namespace = Some(ns);
+        } else if arg == "-p" {
+            patch = Some(flag_value(&mut iter, "-p, --patch")?.to_string());
+        } else if let Some(value) = take_long(arg, "--patch", &mut iter)? {
+            patch = Some(value);
+        } else if let Some(value) = take_long(arg, "--type", &mut iter)? {
+            patch_type = match value.as_str() {
+                "strategic" => PatchType::Strategic,
+                "merge" => PatchType::Merge,
+                "json" => PatchType::Json,
+                other => return Err(ParseError::InvalidPatchType(other.to_string())),
+            };
+        } else if arg.starts_with("--") {
+            return Err(unknown_flag(arg));
+        } else if let Some(value) = arg.strip_prefix("-p") {
+            patch = Some(value.to_string());
+        } else if is_flag(arg) {
+            return Err(unknown_flag(arg));
+        } else {
+            positional.push(arg);
+        }
+    }
+
+    let (resource, name) = match positional.as_slice() {
+        [target] => match target.split_once('/') {
+            Some((resource, name)) => (resource.to_string(), name.to_string()),
+            None => return Err(ParseError::MissingName),
+        },
+        [resource, name] => (resource.to_string(), name.to_string()),
+        [] => return Err(ParseError::MissingResource("patch")),
+        [_, _, extra @ ..] => {
+            return Err(ParseError::UnexpectedArgs(
+                extra.iter().map(|a| a.to_string()).collect(),
+            ))
+        }
+    };
+    if crate::api::kind_for_arg(&resource).is_none() {
+        return Err(ParseError::UnsupportedResource(resource));
+    }
+    let patch = patch.ok_or(ParseError::MissingPatch)?;
+    Ok(PatchArgs {
+        resource,
+        name,
+        namespace,
+        patch,
+        patch_type,
+    })
 }
 
 fn parse_rollout_restart(args: &[&str]) -> Result<RolloutRestartArgs, ParseError> {

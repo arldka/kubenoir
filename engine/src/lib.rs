@@ -15,6 +15,7 @@ mod manifests;
 mod mutate;
 mod names;
 mod parser;
+mod patch;
 mod render;
 mod scenario;
 mod sim;

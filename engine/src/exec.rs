@@ -29,6 +29,8 @@ pub fn execute(command: &Command, env: &Env<'_>, files: &Files) -> (String, Vec<
         Command::Apply(args) => manifests::apply(args, env, files).map(written),
         Command::Create(args) => manifests::create(args, env, files).map(written),
         Command::DeleteFiles(args) => manifests::delete(args, env, files).map(written),
+        Command::Replace(args) => manifests::replace(args, env, files).map(written),
+        Command::Patch(args) => crate::patch::patch(args, env),
     };
     result.unwrap_or_else(|e| (format!("error: {e}"), Vec::new()))
 }

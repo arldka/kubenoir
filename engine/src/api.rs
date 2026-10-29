@@ -352,6 +352,7 @@ pub fn update(store: &ClusterStore, manifest: &Value, namespace: &str) -> Result
     };
     validate(info, &name, &object)?;
     apply_defaults(info, &name, &mut object);
+    validate_update(info, &name, &object, &current)?;
 
     let fields = object.as_object_mut().expect("object");
     match current.get("status") {
@@ -609,6 +610,93 @@ fn go_map(labels: Option<&Map<String, Value>>) -> String {
         .map(|(k, v)| format!("{k:?}:{:?}", v.as_str().unwrap_or_default()))
         .collect();
     format!("map[string]string{{{}}}", entries.join(", "))
+}
+
+/// What kube-apiserver says when a pod update touches anything but the few mutable fields.
+pub const POD_UPDATE_FORBIDDEN: &str = "spec: Forbidden: pod updates may not change fields other than `spec.containers[*].image`, `spec.initContainers[*].image`, `spec.activeDeadlineSeconds`, `spec.tolerations` (only additions to existing tolerations), `spec.terminationGracePeriodSeconds` (allow it to be set to 1 if it was previously negative)";
+
+/// Rules about how an existing object may change (both sides already defaulted).
+fn validate_update(info: &KindInfo, name: &str, object: &Value, current: &Value) -> Result<(), ApiError> {
+    let mut causes = Vec::new();
+    match info.kind {
+        "Pod" => {
+            if !pod_spec_change_allowed(&current["spec"], &object["spec"]) {
+                causes.push(POD_UPDATE_FORBIDDEN.to_string());
+            }
+        }
+        "Deployment" | "ReplicaSet" => {
+            let selector = &object["spec"]["selector"];
+            if *selector != current["spec"]["selector"] {
+                causes.push(format!(
+                    "spec.selector: Invalid value: {}: field is immutable",
+                    go_selector(selector)
+                ));
+            }
+        }
+        _ => {}
+    }
+    if causes.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::Invalid {
+            kind: info.kind,
+            name: name.to_string(),
+            causes,
+        })
+    }
+}
+
+/// Whether `new` differs from `old` only where a running pod may change: container and init
+/// container images, `activeDeadlineSeconds`, tolerations added at the end, and a grace period
+/// that was negative becoming 1.
+fn pod_spec_change_allowed(old: &Value, new: &Value) -> bool {
+    let mut old = old.clone();
+    let mut new = new.clone();
+    for field in ["containers", "initContainers"] {
+        let old_list = old[field].as_array().map_or(0, Vec::len);
+        let new_list = new[field].as_array().map_or(0, Vec::len);
+        if old_list != new_list {
+            return false;
+        }
+        for i in 0..old_list {
+            new[field][i]["image"] = old[field][i]["image"].clone();
+        }
+    }
+    new["activeDeadlineSeconds"] = old["activeDeadlineSeconds"].clone();
+    let old_tolerations = old["tolerations"].as_array().cloned().unwrap_or_default();
+    let new_tolerations = new["tolerations"].as_array().cloned().unwrap_or_default();
+    if new_tolerations.len() < old_tolerations.len() || new_tolerations[..old_tolerations.len()] != old_tolerations[..]
+    {
+        return false;
+    }
+    new["tolerations"] = old["tolerations"].clone();
+    let old_grace = old["terminationGracePeriodSeconds"].as_i64().unwrap_or(30);
+    if old_grace < 0 && new["terminationGracePeriodSeconds"] == json!(1) {
+        new["terminationGracePeriodSeconds"] = old["terminationGracePeriodSeconds"].clone();
+    }
+    // A field set to null and a field left out are the same to the API server.
+    strip_nulls(&mut old);
+    strip_nulls(&mut new);
+    old == new
+}
+
+fn strip_nulls(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            fields.retain(|_, v| !v.is_null());
+            fields.values_mut().for_each(strip_nulls);
+        }
+        Value::Array(items) => items.iter_mut().for_each(strip_nulls),
+        _ => {}
+    }
+}
+
+/// A label selector the way Go prints it in validation messages (`v1.LabelSelector{...}`).
+fn go_selector(selector: &Value) -> String {
+    format!(
+        "v1.LabelSelector{{MatchLabels:{}, MatchExpressions:[]v1.LabelSelectorRequirement(nil)}}",
+        go_map(selector["matchLabels"].as_object())
+    )
 }
 
 // ---- defaulting -------------------------------------------------------------------------------

@@ -20,7 +20,7 @@ use crate::parser::{Command, ResourceKind};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
-const VERBS: [&str; 8] = [
+const VERBS: [&str; 10] = [
     "get",
     "describe",
     "logs",
@@ -29,6 +29,8 @@ const VERBS: [&str; 8] = [
     "delete",
     "apply",
     "create",
+    "replace",
+    "patch",
 ];
 const DEFAULT_STABLE_SECS: i64 = 15;
 
@@ -72,7 +74,8 @@ pub struct Cond {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandMatcher {
-    /// `get`, `describe`, `logs`, `set-env`, `rollout-restart`, `delete`, `apply` or `create`.
+    /// `get`, `describe`, `logs`, `set-env`, `rollout-restart`, `delete`, `apply`, `create`,
+    /// `replace` or `patch`.
     pub verb: String,
     /// Resource kind as kubectl names it (`pods`, `deploy`, ...).
     pub resource: Option<String>,
@@ -454,9 +457,11 @@ fn matches_command(matcher: &CommandMatcher, command: &Command, touched: &[Touch
         ("delete", Command::Delete(a)) => {
             wanted(a.resource) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
         }
-        ("delete", Command::DeleteFiles(_)) | ("apply", Command::Apply(_)) | ("create", Command::Create(_)) => {
-            touched_one()
-        }
+        ("delete", Command::DeleteFiles(_))
+        | ("apply", Command::Apply(_))
+        | ("create", Command::Create(_))
+        | ("replace", Command::Replace(_))
+        | ("patch", Command::Patch(_)) => touched_one(),
         _ => false,
     }
 }
@@ -471,7 +476,9 @@ fn when_matches(when: &When, command: &Command, touched: &[Touched]) -> bool {
 
 /// kubectl reports failures as text; a command that failed does not count as an investigation.
 fn is_error_output(output: &str) -> bool {
-    output.starts_with("error:") || output.starts_with("Error from server") || output.starts_with("The Pod ")
+    output.starts_with("error:")
+        || output.starts_with("Error from server")
+        || (output.starts_with("The ") && output.lines().next().is_some_and(|l| l.contains("\" is invalid")))
 }
 
 // ---- the judge ------------------------------------------------------------------------------

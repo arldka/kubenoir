@@ -30,8 +30,9 @@ pub fn set_env(args: &SetEnvArgs, env: &Env<'_>) -> Result<String, StoreError> {
             // Pods are immutable apart from a few fields; the fix belongs on the owning Deployment.
             return Ok(if env.store.get("Pod", namespace, &args.name)?.is_some() {
                 format!(
-                    "The Pod \"{}\" is invalid: spec: Forbidden: pod updates may not change fields other than `spec.containers[*].image`, `spec.initContainers[*].image`, `spec.activeDeadlineSeconds`, `spec.tolerations` (only additions to existing tolerations), `spec.terminationGracePeriodSeconds` (allow it to be set to 1 if it was previously negative)",
-                    args.name
+                    "The Pod \"{}\" is invalid: {}",
+                    args.name,
+                    crate::api::POD_UPDATE_FORBIDDEN
                 )
             } else {
                 not_found(args.resource, &args.name)

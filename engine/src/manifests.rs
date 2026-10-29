@@ -325,3 +325,48 @@ pub fn delete(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Writt
     }
     Ok(Written::report(lines, errors, touched))
 }
+
+/// `kubectl replace -f`: each object replaces the stored one whole (no merge). With `--force` it
+/// is deleted and created again instead, which is how a pod's immutable fields get changed.
+pub fn replace(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Written, StoreError> {
+    let docs = match read_docs(args, files) {
+        Ok(docs) => docs,
+        Err(message) => return Ok(Written::message(message)),
+    };
+    let (mut lines, mut errors, mut touched) = (Vec::new(), Vec::new(), Vec::new());
+    for doc in &docs {
+        let kind = doc.manifest["kind"].as_str().unwrap_or_default();
+        let api_version = doc.manifest["apiVersion"].as_str().unwrap_or_default();
+        let Some(info) = api::kind_for(kind, api_version) else {
+            let error = ApiError::NoKindMatch {
+                kind: kind.to_string(),
+                api_version: api_version.to_string(),
+            };
+            errors.push(write_error(doc, "replacing", &error));
+            continue;
+        };
+        let result = if args.force {
+            if info.kind == "Namespace" {
+                errors.push("error: deleting namespaces is not available in this terminal".into());
+                continue;
+            }
+            // A real `replace --force` waits for the deletion; here it is immediate.
+            let namespace = if info.namespaced { doc.namespace.as_str() } else { "" };
+            if delete_object(env, info.kind, namespace, doc.name(), true)? {
+                lines.push(format!("{} \"{}\" deleted", info.name_prefix(), doc.name()));
+            }
+            api::create(env.store, &doc.manifest, &doc.namespace, env.now, Origin::Client)
+        } else {
+            api::update(env.store, &doc.manifest, &doc.namespace)
+        };
+        match result {
+            Ok(replaced) => {
+                lines.push(format!("{}/{} replaced", info.name_prefix(), replaced.name));
+                touched.push((info.kind, replaced.name));
+            }
+            Err(ApiError::Store(e)) => return Err(e),
+            Err(e) => errors.push(write_error(doc, "replacing", &e)),
+        }
+    }
+    Ok(Written::report(lines, errors, touched))
+}
