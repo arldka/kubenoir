@@ -145,6 +145,12 @@ pub struct ManifestArgs {
     pub force: bool,
 }
 
+/// `cat FILE...` and `ls [FILE]...` over the terminal's files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathArgs {
+    pub paths: Vec<String>,
+}
+
 /// How `kubectl patch` reads its patch (`--type`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchType {
@@ -176,6 +182,8 @@ pub enum Command {
     DeleteFiles(ManifestArgs),
     Replace(ManifestArgs),
     Patch(PatchArgs),
+    Cat(PathArgs),
+    Ls(PathArgs),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +227,8 @@ pub enum ParseError {
     InvalidPatchType(String),
     /// `--force` outside `replace`.
     ForceWithoutReplace,
+    /// A failure of a built-in shell command, already worded (`ls: invalid option -- 'l'`).
+    Builtin(String),
 }
 
 impl fmt::Display for ParseError {
@@ -281,6 +291,7 @@ impl fmt::Display for ParseError {
                 f,
                 "error: --type must be one of [json merge strategic], not \"{t}\""
             ),
+            ParseError::Builtin(message) => write!(f, "{message}"),
             ParseError::ForceWithoutReplace => write!(f, "error: unknown flag: --force"),
         }
     }
@@ -338,6 +349,7 @@ pub fn parse(input: &str) -> Result<Command, ParseError> {
     match tokens.next() {
         None => return Err(ParseError::Empty),
         Some("kubectl") => {}
+        Some(builtin @ ("cat" | "ls")) => return parse_paths(builtin, tokens.collect()),
         Some(other) => return Err(ParseError::UnknownCommand(other.to_string())),
     }
 
@@ -377,6 +389,31 @@ pub fn parse(input: &str) -> Result<Command, ParseError> {
         },
         other => Err(ParseError::UnknownVerb(other.to_string())),
     }
+}
+
+/// `cat` / `ls`: file operands only; options are refused the way coreutils refuses unknown ones.
+fn parse_paths(command: &str, args: Vec<&str>) -> Result<Command, ParseError> {
+    let mut paths = Vec::new();
+    let mut operands_only = false;
+    for arg in args {
+        if !operands_only && arg == "--" {
+            operands_only = true;
+        } else if !operands_only && is_flag(arg) {
+            let message = match arg.strip_prefix("--") {
+                Some(long) => format!("{command}: unrecognized option '--{long}'"),
+                None => format!("{command}: invalid option -- '{}'", arg.chars().nth(1).unwrap_or('-')),
+            };
+            return Err(ParseError::Builtin(message));
+        } else {
+            paths.push(arg.to_string());
+        }
+    }
+    let args = PathArgs { paths };
+    Ok(if command == "cat" {
+        Command::Cat(args)
+    } else {
+        Command::Ls(args)
+    })
 }
 
 const NAMESPACE_FLAG: &str = "-n, --namespace";
@@ -1074,7 +1111,22 @@ mod tests {
     #[test]
     fn rejects_bad_input() {
         assert_eq!(parse(""), Err(ParseError::Empty));
-        assert_eq!(parse("ls"), Err(ParseError::UnknownCommand("ls".into())));
+        assert_eq!(parse("rm x"), Err(ParseError::UnknownCommand("rm".into())));
+        assert_eq!(
+            parse("ls -l"),
+            Err(ParseError::Builtin("ls: invalid option -- 'l'".into()))
+        );
+        assert_eq!(
+            parse("cat --number x"),
+            Err(ParseError::Builtin("cat: unrecognized option '--number'".into()))
+        );
+        assert_eq!(
+            parse("cat -- -x a.yaml"),
+            Ok(Command::Cat(PathArgs {
+                paths: vec!["-x".into(), "a.yaml".into()]
+            }))
+        );
+        assert_eq!(parse("ls"), Ok(Command::Ls(PathArgs { paths: vec![] })));
         assert_eq!(parse("kubectl"), Err(ParseError::MissingVerb));
         assert_eq!(parse("kubectl nope"), Err(ParseError::UnknownVerb("nope".into())));
         assert_eq!(parse("kubectl get"), Err(ParseError::MissingResource("get")));

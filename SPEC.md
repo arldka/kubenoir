@@ -76,7 +76,7 @@ T3a|x|migrate `scenarios/crashloop-env-typo` & `sample-crashloop` to JSON + `man
 T3b|x|registry: `make registry` publishes scenario dir + refs; `frontend/src/lib/registry.ts` fetches refs vs scenario URL; `?scenarioUrl=` resolves same|I.registry,V23
 T4|x|judge: `select.kind` ∀ registered kind; `findings` ∀ verb|I.scenario
 T5|x|Pod immutability rules + `replace --force` + `patch` (strategic/merge/json)|V3,V1
-T6|.|player virtual fs + scenario seeding; `cat`, `ls` builtins|I.fs
+T6|x|player virtual fs + scenario seeding; `cat`, `ls` builtins|I.fs
 T7|.|minimal shell: tokenizer w/ pipes, `echo -n`, `base64 -d`, `grep`, `head`|I.shell
 T8|.|output fidelity: `-o yaml\|json\|name\|wide\|jsonpath`, `-l`, `-A`, golden tests vs real kubectl captures|V6,I.cmd
 T9|.|`--help` ∀ verb + `explain` from `k8s-openapi` docs|V7

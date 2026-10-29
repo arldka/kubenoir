@@ -5,7 +5,7 @@
 //   apps/{name}/{version}.wasm      from apps/target/wasm32-wasip1/release (run `make apps` first)
 //   scenarios/index.json            [{"id", "title", "objective"}], sorted by id
 //   scenarios/{id}/scenario.json    from scenarios/{id}/scenario.json
-//   scenarios/{id}/{manifest}       every file its cluster.manifests lists, at the same path
+//   scenarios/{id}/{file}           every file its cluster.manifests and files list, at the same path
 //
 // Scenarios without a `briefing` are engine test fixtures and are skipped. Anything else that is
 // wrong (bad meta, an id that does not match its folder, an app not in the registry) fails.
@@ -63,6 +63,7 @@ for (const dir of readdirSync(join(root, 'scenarios')).sort()) {
 		briefing?: unknown;
 		images?: Record<string, { app?: string }>;
 		cluster?: { manifests?: unknown };
+		files?: unknown;
 	};
 	if (data.briefing === undefined) {
 		console.log(`build-registry: skipped scenarios/${dir} (no briefing: a test fixture, not a case)`);
@@ -84,17 +85,19 @@ for (const dir of readdirSync(join(root, 'scenarios')).sort()) {
 	}
 	const manifests = data.cluster?.manifests ?? [];
 	if (!Array.isArray(manifests)) fail(`scenarios/${dir}: cluster.manifests must be a list of paths`);
+	const extraFiles = data.files ?? [];
+	if (!Array.isArray(extraFiles)) fail(`scenarios/${dir}: files must be a list of paths`);
 	const published = join(out, 'scenarios', meta.id);
 	mkdirSync(published, { recursive: true });
 	cpSync(file, join(published, 'scenario.json'));
-	for (const ref of manifests) {
+	for (const ref of [...manifests, ...extraFiles]) {
 		// The engine's scenario-check has already vetted these; refuse anything unsafe regardless.
 		const path = typeof ref === 'string' ? ref.replace(/^(\.\/)+/, '') : '';
 		if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(path) || path.split('/').some((s) => s === '.' || s === '..')) {
-			fail(`scenarios/${dir}: manifest reference ${JSON.stringify(ref)} is not a safe relative path`);
+			fail(`scenarios/${dir}: file reference ${JSON.stringify(ref)} is not a safe relative path`);
 		}
 		const source = join(root, 'scenarios', dir, path);
-		if (!existsSync(source)) fail(`scenarios/${dir}: ${path} (listed in cluster.manifests) does not exist`);
+		if (!existsSync(source)) fail(`scenarios/${dir}: ${path} (listed in the scenario) does not exist`);
 		mkdirSync(dirname(join(published, path)), { recursive: true });
 		cpSync(source, join(published, path));
 	}

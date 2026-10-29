@@ -51,7 +51,7 @@ impl Engine {
             config: cluster.config,
             judge: Judge::new(cluster.rules),
             now: clock::secs(&cluster.started_at),
-            files: Files::new(),
+            files: cluster.files,
         };
         // Let the control plane notice the seeded objects, then live through the history the
         // scenario asks for so the player starts at `now` with a cluster that has a past.

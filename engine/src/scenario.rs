@@ -42,6 +42,10 @@ struct Scenario {
     /// Hidden clues unlocked by investigating; see `judge`.
     #[serde(default)]
     findings: Vec<Finding>,
+    /// Text files the player's terminal starts with (`cat`, `kubectl apply -f`), relative to the
+    /// scenario file; they appear in the terminal at the same path.
+    #[serde(default)]
+    files: Vec<String>,
     cluster: ClusterSeed,
 }
 
@@ -94,7 +98,7 @@ impl fmt::Display for ScenarioError {
             ScenarioError::Parse(e) => write!(f, "invalid scenario JSON: {e}"),
             ScenarioError::Format(reason) => write!(f, "invalid scenario: {reason}"),
             ScenarioError::ManifestRef { reference, reason } => {
-                write!(f, "invalid scenario: cluster.manifests entry \"{reference}\" {reason}")
+                write!(f, "invalid scenario: file reference \"{reference}\" {reason}")
             }
             ScenarioError::Manifest { file, document, reason } => {
                 write!(f, "invalid scenario: {file}, document {document}: {reason}")
@@ -133,6 +137,8 @@ pub struct Cluster {
     pub rules: Rules,
     /// When the simulation begins (`cluster.startedAt`, defaulting to `now`).
     pub started_at: Time,
+    /// The files the player's terminal starts with, by path.
+    pub files: Files,
     /// The time the player starts at; the cluster is run forward from `started_at` to here.
     pub now: Time,
 }
@@ -153,13 +159,15 @@ pub fn required_apps(json: &str) -> Result<Vec<String>, ScenarioError> {
     Ok(apps.into_iter().collect())
 }
 
-/// The manifest files a scenario references (`cluster.manifests`), each checked to be a safe
+/// The files a scenario references (`cluster.manifests` and `files`), each checked to be a safe
 /// path inside the scenario's folder: what the caller must read or fetch and pass to `load`.
 pub fn required_files(json: &str) -> Result<Vec<String>, ScenarioError> {
     #[derive(Deserialize)]
     struct Refs {
         #[serde(default)]
         cluster: Option<RefsCluster>,
+        #[serde(default)]
+        files: Vec<String>,
     }
     #[derive(Deserialize)]
     struct RefsCluster {
@@ -167,15 +175,20 @@ pub fn required_files(json: &str) -> Result<Vec<String>, ScenarioError> {
         manifests: Vec<String>,
     }
     let parsed: Refs = serde_json::from_str(json).map_err(ScenarioError::Parse)?;
-    let refs = parsed.cluster.map(|c| c.manifests).unwrap_or_default();
+    let mut refs = parsed.cluster.map(|c| c.manifests).unwrap_or_default();
     for reference in &refs {
-        check_reference(reference)?;
+        check_reference(reference, true)?;
     }
+    for reference in &parsed.files {
+        check_reference(reference, false)?;
+    }
+    refs.extend(parsed.files);
     Ok(refs)
 }
 
-/// A manifest reference must stay inside the scenario folder: relative, no `..`, plain names.
-fn check_reference(reference: &str) -> Result<(), ScenarioError> {
+/// A file reference must stay inside the scenario folder: relative, no `..`, plain names.
+/// Manifests (`manifest`) must also be YAML or JSON files.
+fn check_reference(reference: &str, manifest: bool) -> Result<(), ScenarioError> {
     let bad = |reason: &str| {
         Err(ScenarioError::ManifestRef {
             reference: reference.to_string(),
@@ -197,7 +210,7 @@ fn check_reference(reference: &str) -> Result<(), ScenarioError> {
             return bad("may only use A-Z a-z 0-9 . _ - in its path");
         }
     }
-    if !(path.ends_with(".yaml") || path.ends_with(".yml") || path.ends_with(".json")) {
+    if manifest && !(path.ends_with(".yaml") || path.ends_with(".yml") || path.ends_with(".json")) {
         return bad("must be a .yaml, .yml or .json file");
     }
     Ok(())
@@ -278,6 +291,17 @@ pub fn load(json: &str, files: &Files, apps: AppSet) -> Result<Cluster, Scenario
     let start = clock::secs(&started_at);
     api::seed_system_namespaces(&store, start)?;
     seed_manifests(&store, &scenario.cluster.manifests, files, start)?;
+    let mut player_files = Files::new();
+    for reference in &scenario.files {
+        check_reference(reference, false)?;
+        let text = files
+            .get(&normalize_path(reference))
+            .ok_or_else(|| ScenarioError::ManifestRef {
+                reference: reference.clone(),
+                reason: "was not supplied (is the file next to scenario.json?)".into(),
+            })?;
+        player_files.insert(normalize_path(reference), text.clone());
+    }
 
     let rules = Rules {
         success: scenario.success,
@@ -294,6 +318,7 @@ pub fn load(json: &str, files: &Files, apps: AppSet) -> Result<Cluster, Scenario
         config,
         rules,
         started_at,
+        files: player_files,
         now,
     })
 }
@@ -304,7 +329,7 @@ pub fn load(json: &str, files: &Files, apps: AppSet) -> Result<Cluster, Scenario
 fn seed_manifests(store: &ClusterStore, refs: &[String], files: &Files, start: i64) -> Result<(), ScenarioError> {
     let mut documents = Vec::new();
     for reference in refs {
-        check_reference(reference)?;
+        check_reference(reference, true)?;
         let text = files
             .get(&normalize_path(reference))
             .ok_or_else(|| ScenarioError::ManifestRef {
@@ -517,7 +542,7 @@ status: {phase: Running}
             .to_string();
         assert_eq!(
             err,
-            "invalid scenario: cluster.manifests entry \"missing.yaml\" was not supplied (is the file next to scenario.json?)"
+            "invalid scenario: file reference \"missing.yaml\" was not supplied (is the file next to scenario.json?)"
         );
         for reference in ["../other/x.yaml", "/etc/x.yaml", "a//b.yaml", "a/./b.yaml", ""] {
             let err = required_files(&scenario_with(&[reference])).err().unwrap().to_string();
@@ -603,6 +628,38 @@ status: {phase: Running}
         );
         assert!(required_apps("{}").unwrap().is_empty());
         assert!(required_apps("nope").is_err());
+    }
+
+    #[test]
+    fn scenario_files_seed_the_players_terminal_and_are_required() {
+        let json = format!(
+            r#"{{"schemaVersion":2,"id":"t","files":["notes/case.txt","./todo.txt"],"cluster":{{"now":"{NOW}","manifests":["a.yaml"]}}}}"#
+        );
+        assert_eq!(
+            required_files(&json).unwrap(),
+            ["a.yaml", "notes/case.txt", "./todo.txt"]
+        );
+        let supplied = files(&[("a.yaml", ""), ("notes/case.txt", "hello"), ("todo.txt", "x")]);
+        let cluster = load(&json, &supplied, AppSet::default()).unwrap();
+        assert_eq!(cluster.files.get("notes/case.txt").map(String::as_str), Some("hello"));
+        assert_eq!(cluster.files.get("todo.txt").map(String::as_str), Some("x"));
+        assert!(
+            !cluster.files.contains_key("a.yaml"),
+            "manifests are not terminal files"
+        );
+
+        let missing = files(&[("a.yaml", "")]);
+        let err = load(&json, &missing, AppSet::default()).err().unwrap().to_string();
+        assert_eq!(
+            err,
+            "invalid scenario: file reference \"notes/case.txt\" was not supplied (is the file next to scenario.json?)"
+        );
+        let bad = format!(r#"{{"schemaVersion":2,"files":["../x.txt"],"cluster":{{"now":"{NOW}"}}}}"#);
+        assert!(required_files(&bad)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("inside the scenario folder"));
     }
 
     #[test]

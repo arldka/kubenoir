@@ -9,6 +9,7 @@ mod controllers;
 mod describe;
 mod events;
 mod exec;
+mod fs;
 mod judge;
 mod logs;
 mod manifests;
