@@ -3,6 +3,7 @@
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
 use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Event, Namespace, Node, Pod, PodTemplateSpec, Secret, Service};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
+use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use serde::de::DeserializeOwned;
@@ -135,6 +136,7 @@ fn table(info: &KindInfo, items: &[Value], wide: bool, now: &Time) -> Table {
         "Namespace" => namespace_table(&typed::<Namespace>(items), now),
         "Node" => node_table(&typed::<Node>(items), wide, now),
         "Endpoints" => endpoints_table(&typed::<Endpoints>(items), now),
+        "NetworkPolicy" => policy_table(&typed::<NetworkPolicy>(items), now),
         "EndpointSlice" => slice_table(&typed::<EndpointSlice>(items), now),
         _ => service_table(&typed::<Service>(items), wide, now),
     }
@@ -408,6 +410,39 @@ fn configmap_table(items: &[ConfigMap], now: &Time) -> Table {
         })
         .collect();
     Table::new(vec!["NAME", "DATA", "AGE"], rows, items.iter().map(|c| &c.metadata))
+}
+
+fn policy_table(items: &[NetworkPolicy], now: &Time) -> Table {
+    let rows = items
+        .iter()
+        .map(|p| {
+            let selector = p.spec.as_ref().and_then(|s| s.pod_selector.as_ref()).map(|s| {
+                let mut parts: Vec<String> = s
+                    .match_labels
+                    .iter()
+                    .flatten()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                parts.extend(
+                    s.match_expressions
+                        .iter()
+                        .flatten()
+                        .map(|e| format!("{} {}", e.key, e.operator)),
+                );
+                parts.join(",")
+            });
+            vec![
+                p.metadata.name.clone().unwrap_or_default(),
+                selector.filter(|s| !s.is_empty()).unwrap_or_else(|| "<none>".into()),
+                object_age(&p.metadata, now),
+            ]
+        })
+        .collect();
+    Table::new(
+        vec!["NAME", "POD-SELECTOR", "AGE"],
+        rows,
+        items.iter().map(|p| &p.metadata),
+    )
 }
 
 fn secret_table(items: &[Secret], now: &Time) -> Table {

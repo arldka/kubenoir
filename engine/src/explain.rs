@@ -25,6 +25,7 @@ fn root_schema(kind: &str) -> Option<Value> {
         "Secret" => generator.into_root_schema_for::<Secret>(),
         "Endpoints" => generator.into_root_schema_for::<Endpoints>(),
         "EndpointSlice" => generator.into_root_schema_for::<k8s_openapi::api::discovery::v1::EndpointSlice>(),
+        "NetworkPolicy" => generator.into_root_schema_for::<k8s_openapi::api::networking::v1::NetworkPolicy>(),
         "Service" => generator.into_root_schema_for::<Service>(),
         _ => return None,
     };

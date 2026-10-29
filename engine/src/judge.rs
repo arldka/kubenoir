@@ -1082,7 +1082,9 @@ mod tests {
         }
         let err = rules(json!({"success": {"assert": [{"label": "a", "select": {"kind": "Pods"}}]}})).unwrap_err();
         assert!(
-            err.contains("(expected ConfigMap, Deployment, Endpoints, EndpointSlice, Event, Namespace, Node, Pod"),
+            err.contains(
+                "(expected ConfigMap, Deployment, Endpoints, EndpointSlice, Event, Namespace, NetworkPolicy, Node, Pod"
+            ),
             "{err}"
         );
         for verb in ["apply", "create", "delete"] {

@@ -154,9 +154,8 @@ fn request(options: &Curl, url: &str, source: &Value, env: &Env<'_>) -> Result<R
         return Ok(Err(Failure(3, "URL rejected: No host part in the URL".into())));
     }
 
-    let namespace = source["metadata"]["namespace"].as_str().unwrap_or(DEFAULT_NAMESPACE);
     let listens = |pod: &Value, port: i64| controllers::listens(env.store, pod, port);
-    let outcome = net::connect(env.store, namespace, host, port, &listens)?;
+    let outcome = net::connect(env.store, source, host, port, &listens)?;
     let (target_namespace, target, target_port) = match outcome {
         Outcome::NxDomain => return Ok(Err(Failure(6, format!("Could not resolve host: {host}")))),
         Outcome::Refused => {

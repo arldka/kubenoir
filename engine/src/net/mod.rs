@@ -9,6 +9,8 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
+mod policy;
+
 use crate::store::{ClusterStore, StoreError};
 
 const CLUSTER_DOMAIN: &str = "cluster.local";
@@ -31,20 +33,23 @@ pub enum Outcome {
     External { host: String },
 }
 
-/// Connect from a pod in `source_namespace` to `host:port`. `listens(pod, port)` says whether a
-/// pod's containers accept connections on a port.
+/// Connect from the pod `source` (a Pod manifest: its namespace and labels matter) to
+/// `host:port`. `listens(pod, port)` says whether a pod's containers accept connections on a port.
 pub fn connect(
     store: &ClusterStore,
-    source_namespace: &str,
+    source: &Value,
     host: &str,
     port: i64,
     listens: &dyn Fn(&Value, i64) -> bool,
 ) -> Result<Outcome, StoreError> {
     let mut host = host.trim_end_matches('.').to_ascii_lowercase();
-    let mut namespace = source_namespace.to_string();
+    let mut namespace = source["metadata"]["namespace"]
+        .as_str()
+        .unwrap_or("default")
+        .to_string();
     for _ in 0..MAX_ALIASES {
         if host.parse::<std::net::Ipv4Addr>().is_ok() {
-            return by_address(store, &host, port, listens);
+            return by_address(store, source, &host, port, listens);
         }
         let Some((service, service_namespace)) = lookup(store, &namespace, &host)? else {
             return Ok(Outcome::NxDomain);
@@ -65,7 +70,7 @@ pub fn connect(
             }
             continue;
         }
-        return through_service(store, &service, &service_namespace, port, listens);
+        return through_service(store, source, &service, &service_namespace, port, listens);
     }
     Ok(Outcome::NxDomain)
 }
@@ -102,6 +107,7 @@ fn lookup(store: &ClusterStore, namespace: &str, host: &str) -> Result<Option<(V
 /// A connection to a literal IP: a Service's cluster IP, or a pod's.
 fn by_address(
     store: &ClusterStore,
+    source: &Value,
     ip: &str,
     port: i64,
     listens: &dyn Fn(&Value, i64) -> bool,
@@ -112,12 +118,12 @@ fn by_address(
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
-            return through_service(store, &service, &namespace, port, listens);
+            return through_service(store, source, &service, &namespace, port, listens);
         }
     }
     for pod in store.list_all("Pod")? {
         if pod["status"]["podIP"].as_str() == Some(ip) {
-            return Ok(reach(&pod, port, listens));
+            return reach(store, source, &pod, port, listens);
         }
     }
     Ok(Outcome::Timeout)
@@ -125,6 +131,7 @@ fn by_address(
 
 fn through_service(
     store: &ClusterStore,
+    source: &Value,
     service: &Value,
     namespace: &str,
     port: i64,
@@ -157,13 +164,23 @@ fn through_service(
         return Ok(Outcome::Refused);
     };
     match store.get("Pod", namespace, &pod)? {
-        Some(pod) => Ok(reach(&pod, target_port, listens)),
+        Some(pod) => reach(store, source, &pod, target_port, listens),
         None => Ok(Outcome::Refused),
     }
 }
 
-fn reach(pod: &Value, port: i64, listens: &dyn Fn(&Value, i64) -> bool) -> Outcome {
-    if listens(pod, port) {
+/// The last hops: the policies of both ends, then whether the pod listens.
+fn reach(
+    store: &ClusterStore,
+    source: &Value,
+    pod: &Value,
+    port: i64,
+    listens: &dyn Fn(&Value, i64) -> bool,
+) -> Result<Outcome, StoreError> {
+    if !policy::allows(store, source, pod, port)? {
+        return Ok(Outcome::Timeout);
+    }
+    Ok(if listens(pod, port) {
         Outcome::Connected {
             namespace: pod["metadata"]["namespace"].as_str().unwrap_or_default().to_string(),
             pod: pod["metadata"]["name"].as_str().unwrap_or_default().to_string(),
@@ -171,7 +188,7 @@ fn reach(pod: &Value, port: i64, listens: &dyn Fn(&Value, i64) -> bool) -> Outco
         }
     } else {
         Outcome::Refused
-    }
+    })
 }
 
 #[cfg(test)]
@@ -238,7 +255,14 @@ mod tests {
     }
 
     fn go(store: &ClusterStore, from: &str, host: &str, port: i64) -> Outcome {
-        connect(store, from, host, port, &listens_on_5432).unwrap()
+        connect(
+            store,
+            &json!({"metadata": {"namespace": from}}),
+            host,
+            port,
+            &listens_on_5432,
+        )
+        .unwrap()
     }
 
     fn connected() -> Outcome {
@@ -295,7 +319,14 @@ mod tests {
         // No endpoints: refused.
         assert_eq!(go(&store, "data", "empty", 80), Outcome::Refused);
         // The pod is behind the Service but does not listen on the target port.
-        let deaf = connect(&store, "data", "postgres", 5432, &|_, _| false).unwrap();
+        let deaf = connect(
+            &store,
+            &json!({"metadata": {"namespace": "data"}}),
+            "postgres",
+            5432,
+            &|_, _| false,
+        )
+        .unwrap();
         assert_eq!(deaf, Outcome::Refused);
     }
 

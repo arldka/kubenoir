@@ -111,7 +111,7 @@ T20|x|connectivity oracle in `engine/src/` (DNS, ports, endpoints, listen check)
 T21|x|app ABI: listen declaration + request handler; `kit` helpers; new `http-responder` template app|I.app,C4,C5
 T22|x|`kubectl exec <pod> -- curl` builtin via oracle + handler|I.shell,V10
 T23|x|`db-client` new version: connect via oracle host call, server described by target pod's app (`postgres` template), ⊥ static `database.host`|C4,C5,C6
-T24|.|NetworkPolicy eval in oracle|V10
+T24|x|NetworkPolicy eval in oracle|V10
 T25|.|probes (http/tcp/exec) + liveness restarts + readiness → endpoints|V18,V11
 T26|.|pilot #1 New Badge (namespace)|T9,T14,V20
 T27|.|pilot #3 Changing the Story (pod immutability; `echo-env` app; player edits the pod manifest with vim, then `replace --force`)|T5,T35,T36,T37,V3,V20

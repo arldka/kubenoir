@@ -160,7 +160,6 @@ fn resource_types_that_exist_but_are_not_simulated_say_so() {
         "ingress",
         "ds",
         "sts",
-        "netpol",
         "hpa",
         "all",
         "serviceaccounts",

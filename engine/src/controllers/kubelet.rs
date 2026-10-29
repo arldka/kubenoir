@@ -467,7 +467,8 @@ fn apply(
             }
             let timeline = vols.timeline(peers);
             // What the app can reach is what the cluster is at this moment (V32).
-            let oracle = oracle(ctx.env, &ctx.namespace);
+            let source = serde_json::to_value(&ctx.pod).unwrap_or_default();
+            let oracle = oracle(ctx.env, &source);
             rt.program = apps::run(
                 &ctx.env.config.apps,
                 ctx.env.config.images.get(&image),
@@ -841,13 +842,13 @@ pub fn is_running(store: &ClusterStore, namespace: &str, pod: &str, container: &
         .is_some_and(|rt| rt.phase == Phase::Running))
 }
 
-/// The connectivity oracle as an app sees it: connect from a pod in `namespace` to `host:port`
+/// The connectivity oracle as an app sees it: connect from the pod `source` to `host:port`
 /// and, if a program accepts, get its answer to the request.
-fn oracle<'a>(env: &'a Env<'a>, namespace: &'a str) -> impl Fn(&str, i64, &str, &str) -> apps::NetReply + 'a {
+fn oracle<'a>(env: &'a Env<'a>, source: &'a Value) -> impl Fn(&str, i64, &str, &str) -> apps::NetReply + 'a {
     move |host, port, method, path| {
         let reply = |code: i32, body: String| apps::NetReply { code, body };
         let listening = |pod: &Value, port: i64| listens(env.store, pod, port);
-        match net::connect(env.store, namespace, host, port, &listening) {
+        match net::connect(env.store, source, host, port, &listening) {
             Ok(Outcome::NxDomain) => reply(apps::NetReply::NX_DOMAIN, String::new()),
             Ok(Outcome::Timeout | Outcome::External { .. }) => reply(apps::NetReply::TIMEOUT, String::new()),
             Ok(Outcome::Connected { namespace, pod, port }) => {

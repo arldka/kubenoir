@@ -88,14 +88,16 @@ macro_rules! kind {
 use k8s_openapi::api::apps::v1 as apps;
 use k8s_openapi::api::core::v1 as core;
 use k8s_openapi::api::discovery::v1 as discovery;
+use k8s_openapi::api::networking::v1 as networking;
 
-static KINDS: [KindInfo; 11] = [
+static KINDS: [KindInfo; 12] = [
     kind!(core::ConfigMap, "ConfigMap", "", "v1", "configmaps", "configmap", ["cm"], namespaced: true, generation: false, label: false),
     kind!(apps::Deployment, "Deployment", "apps", "apps/v1", "deployments", "deployment", ["deploy"], namespaced: true, generation: true, label: false),
     kind!(core::Endpoints, "Endpoints", "", "v1", "endpoints", "endpoints", ["ep"], namespaced: true, generation: false, label: false),
     kind!(discovery::EndpointSlice, "EndpointSlice", "discovery.k8s.io", "discovery.k8s.io/v1", "endpointslices", "endpointslice", [], namespaced: true, generation: false, label: false),
     kind!(core::Event, "Event", "", "v1", "events", "event", ["ev"], namespaced: true, generation: false, label: false),
     kind!(core::Namespace, "Namespace", "", "v1", "namespaces", "namespace", ["ns"], namespaced: false, generation: false, label: true),
+    kind!(networking::NetworkPolicy, "NetworkPolicy", "networking.k8s.io", "networking.k8s.io/v1", "networkpolicies", "networkpolicy", ["netpol"], namespaced: true, generation: false, label: false),
     kind!(core::Node, "Node", "", "v1", "nodes", "node", ["no"], namespaced: false, generation: false, label: false),
     kind!(core::Pod, "Pod", "", "v1", "pods", "pod", ["po"], namespaced: true, generation: true, label: false),
     kind!(apps::ReplicaSet, "ReplicaSet", "apps", "apps/v1", "replicasets", "replicaset", ["rs"], namespaced: true, generation: true, label: false),
@@ -140,7 +142,6 @@ const UNSIMULATED_KINDS: &[&str] = &[
     "job",
     "lease",
     "limitrange",
-    "networkpolicy",
     "persistentvolume",
     "persistentvolumeclaim",
     "poddisruptionbudget",
@@ -179,8 +180,6 @@ const UNSIMULATED_NAMES: &[&str] = &[
     "leases",
     "limitranges",
     "limits",
-    "netpol",
-    "networkpolicies",
     "pc",
     "pdb",
     "persistentvolumes",
