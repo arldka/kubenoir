@@ -227,19 +227,10 @@ fn deleting_a_pod_makes_the_replicaset_start_a_replacement() {
         format!("pod \"{victim}\" deleted")
     );
 
+    // kubectl waited for the pod to go; its replacement is already on the way.
     let pods = e.eval("kubectl get pods");
-    assert!(
-        pods.lines()
-            .any(|l| l.starts_with(&victim) && l.contains("Terminating")),
-        "{pods}"
-    );
-    assert_eq!(
-        pods.lines()
-            .filter(|l| l.starts_with("web-") && !l.contains("Terminating"))
-            .count(),
-        2,
-        "{pods}"
-    );
+    assert!(!pods.contains(&victim), "{pods}");
+    assert_eq!(pods.lines().filter(|l| l.starts_with("web-")).count(), 2, "{pods}");
 
     e.advance(3);
     let pods = e.eval("kubectl get pods");

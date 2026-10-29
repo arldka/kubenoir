@@ -148,6 +148,22 @@ impl Engine {
         }
     }
 
+    /// Let time pass until no pod is terminating any more, or kubectl would give up waiting.
+    /// (A namespace being deleted is left visibly Terminating: that wait is long and players
+    /// do not sit through it.)
+    fn wait_for_deletions(&mut self) {
+        let limit = self.now + DELETE_WAIT_SECS;
+        while self.now < limit && self.terminating() {
+            self.run_until(self.now + 1);
+        }
+    }
+
+    fn terminating(&self) -> bool {
+        self.store
+            .list_all("Pod")
+            .is_ok_and(|all| all.iter().any(|o| o["metadata"].get("deletionTimestamp").is_some()))
+    }
+
     /// Create or overwrite a text file the terminal's commands can read.
     pub fn write_file(&mut self, path: &str, contents: &str) {
         self.files.insert(normalize_path(path), contents.to_string());
@@ -169,7 +185,24 @@ impl Engine {
         // Commands may have changed desired state; let the cluster react right away.
         self.reconcile();
         self.judge.observe(&self.store, self.now);
+        // `kubectl delete` does not return until the objects are really gone.
+        if ran.executed.iter().any(|e| waits_for_deletion(&e.command)) {
+            self.wait_for_deletions();
+        }
         ran.output
+    }
+}
+
+/// How long `kubectl delete` waits for what it deleted to disappear.
+const DELETE_WAIT_SECS: i64 = 60;
+
+fn waits_for_deletion(command: &crate::parser::Command) -> bool {
+    use crate::parser::Command;
+    match command {
+        Command::Delete(args) => args.kind == "Pod" && !args.immediate,
+        Command::DeleteFiles(_) => true,
+        Command::Replace(args) => args.force,
+        _ => false,
     }
 }
 

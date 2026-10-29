@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 2,
+  "id": "changing-the-story",
+  "title": "Changing the Story",
+  "briefing": "The informant is talking, but he's got his story wrong: he reports every tip as coming from the harbor, and the captain only accepts tips from the docks. His case file, informant.yaml, is in your folder. The captain wants the same informant, same name, same desk, with TIP_SOURCE set to docks. Changing a witness's story turns out to be harder than it sounds.",
+  "objective": "Make the informant in the homicide namespace report TIP_SOURCE=docks.",
+  "hints": [
+    "Start with what the informant says: his logs show the environment he was started with.",
+    "A pod's environment is part of its spec, and a running pod's spec is mostly frozen. Try applying a changed file and read the error carefully.",
+    "If it can't be changed, it can be replaced: delete the pod and create it again with the right value. `kubectl replace --force -f informant.yaml` does both in one go."
+  ],
+  "success": {
+    "stableSeconds": 5,
+    "assert": [
+      {
+        "label": "exactly one informant is running",
+        "select": { "kind": "Pod", "namespace": "homicide", "labels": { "app": "informant" } },
+        "count": { "exactly": 1 },
+        "each": [
+          { "path": "status.phase", "equals": "Running" },
+          { "path": "status.conditions[type=Ready].status", "equals": "True" }
+        ]
+      },
+      {
+        "label": "the informant reports TIP_SOURCE=docks",
+        "select": { "kind": "Pod", "namespace": "homicide", "labels": { "app": "informant" } },
+        "each": [
+          { "path": "spec.containers[0].env[name=TIP_SOURCE].value", "equals": "docks" }
+        ]
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "his-story",
+      "clue": "The informant's log says TIP_SOURCE=harbor: that is the story he was started with.",
+      "when": { "command": { "verb": "logs", "name": "informant" } }
+    },
+    {
+      "id": "no-owner",
+      "clue": "Nothing owns this pod. No Deployment will bring it back: if it goes, it stays gone until you create it again.",
+      "when": { "command": { "verb": "describe", "name": "informant" } }
+    }
+  ],
+  "images": {
+    "informant:1.0": {
+      "pullSeconds": 2,
+      "app": "echo-env@0.1.0",
+      "config": { "name": "informant", "version": "1.0", "vars": ["TIP_SOURCE"] }
+    }
+  },
+  "files": ["case/informant.yaml"],
+  "cluster": {
+    "startedAt": "2026-10-27T09:00:00Z",
+    "now": "2026-10-27T09:05:00Z",
+    "manifests": ["manifests/nodes.yaml", "manifests/informant.yaml"]
+  }
+}

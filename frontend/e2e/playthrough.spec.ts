@@ -11,11 +11,11 @@ async function run(page: Page, command: string) {
 	await page.keyboard.press('Enter');
 }
 
-async function openCase(page: Page) {
+async function openCase(page: Page, path = '/?case=crashloop-env-typo') {
 	const problems: string[] = [];
 	page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
 	page.on('console', (m) => m.type() === 'error' && problems.push(`console: ${m.text()}`));
-	await page.goto('/');
+	await page.goto(path);
 	await expect(screen(page)).toContainText('detective@cluster:~$');
 	await page.locator('.xterm').click();
 	return problems;
@@ -222,18 +222,20 @@ test('the layout fits a phone screen', async ({ page }) => {
 test('the case and its apps are fetched from the local registry', async ({ page }) => {
 	const fetched: string[] = [];
 	page.on('request', (r) => fetched.push(new URL(r.url()).pathname));
-	await openCase(page);
+	// Without a case in the address the registry's list decides which one opens.
+	await openCase(page, '/');
+	expect(fetched).toContain('/registry/scenarios/index.json');
+
+	fetched.length = 0;
+	await openCase(page, '/?case=crashloop-env-typo');
 	expect(fetched).toEqual(
 		expect.arrayContaining([
-			'/registry/scenarios/index.json',
 			'/registry/scenarios/crashloop-env-typo/scenario.json',
 			'/registry/scenarios/crashloop-env-typo/manifests/workloads.yaml',
 			'/registry/apps/db-client/0.2.0.wasm',
 			'/registry/apps/nginx/0.1.0.wasm'
 		])
 	);
-	await page.goto('/?case=crashloop-env-typo');
-	await expect(screen(page)).toContainText('detective@cluster:~$');
 });
 
 test('an unknown case says what could not be found', async ({ page }) => {

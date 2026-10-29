@@ -89,6 +89,12 @@ it the container prints the image's error and exits 1); `POSTGRES_USER` defaults
 default 5432) and lets a client in only when role, database and password all match, answering
 `FATAL:  role/database "x" does not exist` or `password authentication failed` otherwise.
 
+### `echo-env`
+
+Reports the environment it was started with: logs `<name> <version> starting`, then `NAME=value` for
+each name in the config's `vars` (or `WARN NAME is not set`), then `reporting for duty`, and serves.
+Config: `name`, `version`, `vars`.
+
 ### `nginx`
 
 A healthy nginx. It prints its start-up lines and serves forever. It takes no config.

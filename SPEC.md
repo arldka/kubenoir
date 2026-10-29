@@ -114,7 +114,7 @@ T23|x|`db-client` new version: connect via oracle host call, server described by
 T24|x|NetworkPolicy eval in oracle|V10
 T25|x|probes (http/tcp/exec) + liveness restarts + readiness → endpoints|V18,V11
 T26|x|pilot #1 New Badge (namespace)|T9,T14,V20
-T27|.|pilot #3 Changing the Story (pod immutability; `echo-env` app; player edits the pod manifest with vim, then `replace --force`)|T5,T35,T36,T37,V3,V20
+T27|x|pilot #3 Changing the Story (pod immutability; `echo-env` app; player edits the pod manifest with vim, then `replace --force`)|T5,T35,T36,T37,V3,V20
 T28|.|pilot #8 Sealed Envelope (secret base64 newline)|T7,T15,V15,V20,V21
 T29|.|pilot #15 Wrong Mugshot (ImagePullBackOff)|T16,V16,V20
 T30|.|pilot #18 Nobody's Answering (selector mismatch)|T19,T20,T22,V20,V21

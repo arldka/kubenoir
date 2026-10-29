@@ -3,7 +3,7 @@
 # template per image and configure it; see `docs/apps.md`.
 [workspace]
 resolver = "2"
-members = ["kit", "db-client", "http-responder", "nginx", "postgres", "script", "scribe", "watcher"]
+members = ["kit", "db-client", "echo-env", "http-responder", "nginx", "postgres", "script", "scribe", "watcher"]
 
 [workspace.package]
 edition = "2021"

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: informant
+  namespace: homicide
+  labels:
+    app: informant
+spec:
+  containers:
+  - name: informant
+    image: informant:1.0
+    env:
+    - name: TIP_SOURCE
+      value: harbor

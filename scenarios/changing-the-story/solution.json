@@ -1,0 +1,7 @@
+[
+  { "kind": "eval", "command": "kubectl logs informant -n homicide" },
+  { "kind": "eval", "command": "kubectl describe pod informant -n homicide" },
+  { "kind": "eval", "command": "kubectl delete pod informant -n homicide" },
+  { "kind": "eval", "command": "kubectl run informant -n homicide --image=informant:1.0 --labels=app=informant --env=TIP_SOURCE=docks" },
+  { "kind": "advance", "seconds": 30 }
+]
