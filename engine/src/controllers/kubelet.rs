@@ -19,8 +19,9 @@ use k8s_openapi::api::core::v1::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::volumes::{self, VolumeState};
 use super::{container_env, images, pod_identity, pods, Env};
-use crate::apps::{self, Launch, Program};
+use crate::apps::{self, Launch, Mount, Program, VolEvent};
 use crate::clock;
 use crate::events::{self, EventType, Involved, Source};
 use crate::names;
@@ -88,6 +89,16 @@ struct Runtime {
     pull_failures: u32,
     #[serde(default)]
     pull_failed_at: i64,
+    /// What the current run was started with, kept so the run can be simulated again when its
+    /// volumes change.
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    mounts: Vec<Mount>,
+    /// The pod's volumes could not be mounted yet, so nothing else has started for this
+    /// container: no image pull, no start.
+    #[serde(default)]
+    awaiting_volumes: bool,
 }
 
 enum Step {
@@ -115,6 +126,9 @@ impl Runtime {
             pull_error: None,
             pull_failures: 0,
             pull_failed_at: 0,
+            env: BTreeMap::new(),
+            mounts: Vec::new(),
+            awaiting_volumes: false,
         }
     }
 
@@ -229,11 +243,15 @@ fn step_pod(env: &Env<'_>, mut pod: Pod) -> Result<bool, StoreError> {
     let rows = env.store.runtime_for_pod(&namespace, &name)?;
     let has_pod_row = rows.iter().any(|(c, _)| c == POD_ROW);
     let mut runtimes: BTreeMap<String, Runtime> = BTreeMap::new();
+    let mut vols = VolumeState::default();
     for (container, state) in rows {
-        if container != POD_ROW {
+        if container == volumes::ROW {
+            vols = serde_json::from_value(state)?;
+        } else if container != POD_ROW {
             runtimes.insert(container, serde_json::from_value(state)?);
         }
     }
+    let vols_before = vols.clone();
 
     // A deleted pod stops evolving and disappears when its grace period ends.
     if let Some(deleted_at) = pod.metadata.deletion_timestamp.as_ref().map(clock::secs) {
@@ -281,8 +299,19 @@ fn step_pod(env: &Env<'_>, mut pod: Pod) -> Result<bool, StoreError> {
 
     let mut did = false;
     if admit {
+        // Volumes are mounted first; only then does the kubelet pull images and start containers.
+        let mount_error = vols.initialize(env.store, &pod)?.err();
+        if let Some(message) = &mount_error {
+            ctx.event(None, EventType::Warning, "FailedMount", message, env.now)?;
+        }
         for container in &spec.containers {
             let image = container.image.clone().unwrap_or_default();
+            if mount_error.is_some() {
+                let mut waiting = Runtime::creating(env.now + BACKOFF_BASE_SECS);
+                waiting.awaiting_volumes = true;
+                runtimes.insert(container.name.clone(), waiting);
+                continue;
+            }
             ctx.event(
                 Some(&container.name),
                 EventType::Normal,
@@ -298,7 +327,10 @@ fn step_pod(env: &Env<'_>, mut pod: Pod) -> Result<bool, StoreError> {
         did = true;
     }
 
+    // ConfigMaps and Secrets mounted as volumes may have changed since the volume matched them.
+    let mut dirty = vols.ready && vols.observe(env.store, &pod, env.now)?;
     for container in &spec.containers {
+        let peers = peer_writes(&runtimes, &container.name);
         let Some(rt) = runtimes.get_mut(&container.name) else {
             continue;
         };
@@ -307,9 +339,20 @@ fn step_pod(env: &Env<'_>, mut pod: Pod) -> Result<bool, StoreError> {
             if at > env.now {
                 break;
             }
-            apply(&ctx, container, rt, at, step)?;
+            let started = matches!(step, Step::Start);
+            apply(&ctx, container, rt, at, step, &mut vols, &peers)?;
+            dirty |= started;
             did = true;
         }
+    }
+    // A new run or a refreshed volume changes what the other running containers will read.
+    if dirty && vols.ready {
+        did |= settle(&ctx, &spec, &mut runtimes, &vols)?;
+    }
+    if vols != vols_before {
+        env.store
+            .runtime_put(&namespace, &name, volumes::ROW, &serde_json::to_value(&vols)?, None)?;
+        did = true;
     }
 
     if did {
@@ -330,11 +373,34 @@ fn step_pod(env: &Env<'_>, mut pod: Pod) -> Result<bool, StoreError> {
 }
 
 /// Apply one due transition of a container, at the time `t` it was due.
-fn apply(ctx: &PodCtx<'_>, container: &Container, rt: &mut Runtime, t: i64, step: Step) -> Result<(), StoreError> {
+fn apply(
+    ctx: &PodCtx<'_>,
+    container: &Container,
+    rt: &mut Runtime,
+    t: i64,
+    step: Step,
+    vols: &mut VolumeState,
+    peers: &[VolEvent],
+) -> Result<(), StoreError> {
     let image = container.image.clone().unwrap_or_default();
     match step {
         Step::Start => {
             let first_start = rt.phase == Phase::Creating;
+            if rt.awaiting_volumes {
+                if !vols.ready {
+                    if let Err(message) = vols.initialize(ctx.env.store, &ctx.pod)? {
+                        ctx.event(None, EventType::Warning, "FailedMount", &message, t)?;
+                        rt.due = t + BACKOFF_BASE_SECS;
+                        return Ok(());
+                    }
+                }
+                // Mounted at last: now the image is pulled, and then the container starts.
+                rt.awaiting_volumes = false;
+                let pulling = format!("Pulling image \"{image}\"");
+                ctx.event(Some(&container.name), EventType::Normal, "Pulling", &pulling, t)?;
+                rt.due = t + ctx.env.config.pull_seconds(&image);
+                return Ok(());
+            }
             if first_start {
                 // The image comes first. Every attempt uses the pod's current image and pull
                 // secrets, so fixing either takes effect on the next retry.
@@ -396,6 +462,12 @@ fn apply(ctx: &PodCtx<'_>, container: &Container, rt: &mut Runtime, t: i64, step
                 rt.instance += 1;
                 rt.restart_count += 1;
             }
+            let mounts = volumes::mounts_for(&ctx.pod, container);
+            if !first_start {
+                // What the earlier run wrote stays in the volumes for this one.
+                vols.events.append(&mut rt.program.writes);
+            }
+            let timeline = vols.timeline(peers);
             rt.program = apps::run(
                 &ctx.env.config.apps,
                 ctx.env.config.images.get(&image),
@@ -403,9 +475,13 @@ fn apply(ctx: &PodCtx<'_>, container: &Container, rt: &mut Runtime, t: i64, step
                     image: &image,
                     env: &resolved.env,
                     started_at: t,
-                    seed: names::fnv1a(format!("{}/{}/{}", ctx.uid, container.name, rt.instance).as_bytes()),
+                    seed: seed_of(ctx, &container.name, rt.instance),
+                    mounts: &mounts,
+                    timeline: &timeline,
                 },
             );
+            rt.env = resolved.env.clone();
+            rt.mounts = mounts;
             rt.phase = Phase::Running;
             rt.started_at = t;
             rt.lines_emitted = 0;
@@ -488,6 +564,68 @@ fn apply(ctx: &PodCtx<'_>, container: &Container, rt: &mut Runtime, t: i64, step
         }
     }
     Ok(())
+}
+
+/// Seeds a container's run: the same for the same pod, container and restart.
+fn seed_of(ctx: &PodCtx<'_>, container: &str, instance: u32) -> u64 {
+    names::fnv1a(format!("{}/{container}/{instance}", ctx.uid).as_bytes())
+}
+
+/// The files the pod's other containers write, which this one can read.
+fn peer_writes(runtimes: &BTreeMap<String, Runtime>, except: &str) -> Vec<VolEvent> {
+    runtimes
+        .iter()
+        .filter(|(name, _)| name.as_str() != except)
+        .flat_map(|(_, rt)| rt.program.writes.iter().cloned())
+        .collect()
+}
+
+/// Simulate the running containers that use volumes again, now that the volumes (or what their
+/// siblings write) are known to change, and swap the new runs in. Output before now cannot
+/// differ, since nothing that changes happens before now, so what was already logged stands.
+/// Containers read each other's writes, so this repeats until nobody's writes change.
+fn settle(
+    ctx: &PodCtx<'_>,
+    spec: &PodSpec,
+    runtimes: &mut BTreeMap<String, Runtime>,
+    vols: &VolumeState,
+) -> Result<bool, StoreError> {
+    let mut any = false;
+    for _ in 0..4 {
+        let mut writes_changed = false;
+        for container in &spec.containers {
+            let Some(rt) = runtimes.get(&container.name) else {
+                continue;
+            };
+            if rt.phase != Phase::Running || rt.mounts.is_empty() {
+                continue;
+            }
+            let image = container.image.clone().unwrap_or_default();
+            let timeline = vols.timeline(&peer_writes(runtimes, &container.name));
+            let program = apps::run(
+                &ctx.env.config.apps,
+                ctx.env.config.images.get(&image),
+                &Launch {
+                    image: &image,
+                    env: &rt.env,
+                    started_at: rt.started_at,
+                    seed: seed_of(ctx, &container.name, rt.instance),
+                    mounts: &rt.mounts,
+                    timeline: &timeline,
+                },
+            );
+            if program != rt.program {
+                let rt = runtimes.get_mut(&container.name).expect("just read");
+                writes_changed |= program.writes != rt.program.writes;
+                rt.program = program;
+                any = true;
+            }
+        }
+        if !writes_changed {
+            break;
+        }
+    }
+    Ok(any)
 }
 
 /// Mirror runtime state into `pod.status`.

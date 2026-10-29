@@ -31,6 +31,21 @@ pub fn error(message: &str) {
     log("ERROR", message);
 }
 
+/// Why a file operation failed, worded as the C library would (the WASI error numbers, not the
+/// host's, so the text is the same wherever the app runs).
+pub fn io_reason(error: &std::io::Error) -> String {
+    match error.raw_os_error() {
+        Some(2) => "Permission denied".into(),
+        Some(20) => "File exists".into(),
+        Some(31) => "Is a directory".into(),
+        Some(44) => "No such file or directory".into(),
+        Some(54) => "Not a directory".into(),
+        Some(55) => "Directory not empty".into(),
+        Some(69) => "Read-only file system".into(),
+        _ => error.to_string(),
+    }
+}
+
 /// Log a fatal error and exit with code 1.
 pub fn fatal(message: &str) -> ! {
     log("FATAL", message);

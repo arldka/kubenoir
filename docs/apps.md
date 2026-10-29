@@ -25,13 +25,24 @@ Apps are artifacts, like container images:
   `sleep` returns at once but moves the clock forward. The kubelet then plays the output out on
   the cluster clock, so `kubectl logs` shows each line only once its time has come.
 - **Ending.** Returning from `main` exits with code 0, and `std::process::exit(n)` exits with `n`.
-  A process that is still sleeping 30 days in (a server's `loop { sleep }`) runs forever. A panic
-  or any other trap exits with 134, and a run past its instruction budget is killed with 137.
+  A process that is still sleeping 30 days in (a server's `loop { sleep }`) runs forever, and so
+  does one that wakes up now and then and uses up its instruction budget (or logs 3000 lines, or
+  changes files 3000 times) after simulating hours: only its first hours are played. A panic or any
+  other trap exits with 134, and a loop that never sleeps is killed with 137.
 - **Determinism.** The same image, config, environment and start always produce the same run.
   Randomness is seeded per pod, container and restart, and the wall clock is the simulated one.
   Score verification replays sessions, so it relies on this.
-- **What is available.** Only stdout/stderr, args, env, clocks, sleep, random and exit. There are
-  no files, sockets or stdin.
+- **What is available.** stdout/stderr, args, env, clocks, sleep, random, exit and files. There are
+  no sockets or stdin.
+- **Files.** The pod's volumes are mounted at the paths its `volumeMounts` give, and the app reads
+  and writes them with ordinary `std::fs` calls (the container's root is preopened at `/`).
+  `configMap` and `secret` volumes are read-only (`Read-only file system`); `emptyDir` is
+  writable and shared by the pod's containers, and its files survive a container restart but not
+  the pod. A ConfigMap or Secret that changes reaches a running container about a minute later,
+  except through a `subPath` mount, which keeps the content from when the container started. Other
+  volume types keep the pod in `ContainerCreating` with a `FailedMount` event. Because a run is
+  simulated ahead of time, the kubelet simulates a running app again whenever what it can read
+  changes (a refresh, or a sibling's write); what it had already logged stays. Files are text.
 - **Networking is mocked, not simulated.** An app that "connects" somewhere decides the outcome
   itself, by comparing what it was given with the servers its config describes (as `db-client`
   does with `database`). Nothing checks the cluster's Services or Pods.
@@ -65,6 +76,21 @@ never fall back to defaults, so exactly one URL works.
 ### `nginx`
 
 A healthy nginx. It prints its start-up lines and serves forever. It takes no config.
+
+### `watcher`
+
+A service configured by files. At start it reads each file in `WATCH_FILES` (comma-separated
+absolute paths) and logs `loaded <path>: <content>`; a file it cannot read is logged with the
+reason, and fatal with `EXIT_ON_ERROR=1`. With `"reload": true` in the image config it re-reads
+them every `WATCH_INTERVAL` seconds (default 30) and logs `reloaded <path>: ...` when one changed;
+without it, it keeps what it read at start for good. Config: `name`, `version`, `reload`.
+
+### `scribe`
+
+A service that keeps a log file: it appends `entry N` to `SCRIBE_FILE` every `SCRIBE_INTERVAL`
+seconds (default 10) and logs what it wrote or why it could not. `SCRIBE_COUNT=N` makes it stop
+after N entries and exit cleanly. Config: `name`, `version`, `exitOnError` (give up when a write
+fails).
 
 ### `script`
 

@@ -1,6 +1,7 @@
 //! The slice of WASI preview 1 the template apps use, implemented against a simulated process:
-//! arguments and environment from the container, stdout/stderr captured line by line, and a
-//! virtual clock that sleeping moves forward instantly.
+//! arguments and environment from the container, stdout/stderr captured line by line, a
+//! virtual clock that sleeping moves forward instantly, and the container's volumes as a
+//! filesystem preopened at `/` (see `vfs`).
 //!
 //! Guest pointers are offsets into the guest's own linear memory (exported as `memory`), which
 //! lives in the wasmi store, apart from the engine's memory. Every access is bounds-checked
@@ -11,6 +12,8 @@ use std::fmt;
 use wasmi::errors::HostError;
 use wasmi::{Caller, Error, Extern, Linker, Memory, Module, Val, ValType};
 
+use super::vfs::{Fs, Mount, Timeline, TYPE_DIRECTORY};
+
 const MODULE: &str = "wasi_snapshot_preview1";
 
 const ESUCCESS: i32 = 0;
@@ -19,10 +22,19 @@ const EFAULT: i32 = 21;
 const ENOSYS: i32 = 52;
 const ESPIPE: i32 = 70;
 
+/// The one preopened directory: the container's root.
+const ROOT_FD: i32 = 3;
+/// WASI rights bit for writing.
+const RIGHT_FD_WRITE: i64 = 1 << 6;
+
 const NANOS: u64 = 1_000_000_000;
 /// How far a run is simulated. A process still sleeping past this is treated as running forever,
 /// which is how servers (`loop { sleep }`) end their run. Longer than any scenario warm-up.
 pub const HORIZON_NANOS: u64 = 30 * 86_400 * NANOS;
+/// A service that logs this much, or changes files this often, is simulated no further: it is
+/// treated as running on. (Its first hours of output are enough for any session.)
+pub const MAX_LINES: usize = 3_000;
+pub const MAX_WRITES: usize = 3_000;
 
 /// The state of one container run.
 pub struct Process {
@@ -38,6 +50,8 @@ pub struct Process {
     /// Complete lines with the second (since start) they were written.
     pub lines: Vec<(i64, String)>,
     rng: u64,
+    /// The container's volumes.
+    pub fs: Fs,
 }
 
 /// Raised by the host to stop a process that will never exit (see `HORIZON_NANOS`).
@@ -53,8 +67,16 @@ impl fmt::Display for RunsForever {
 impl HostError for RunsForever {}
 
 impl Process {
-    pub fn new(args: Vec<String>, env: Vec<String>, started_at_secs: i64, seed: u64) -> Self {
+    pub fn new(
+        args: Vec<String>,
+        env: Vec<String>,
+        started_at_secs: i64,
+        seed: u64,
+        mounts: &[Mount],
+        timeline: &Timeline,
+    ) -> Self {
         Process {
+            fs: Fs::new(mounts, timeline, started_at_secs),
             args,
             env,
             started_at: u64::try_from(started_at_secs).unwrap_or(0) * NANOS,
@@ -64,6 +86,11 @@ impl Process {
             // xorshift needs a non-zero state.
             rng: seed | 1,
         }
+    }
+
+    /// The wall-clock second now, which stamps the files this run changes.
+    fn now_secs(&self) -> i64 {
+        ((self.started_at + self.elapsed) / NANOS) as i64
     }
 
     /// Seconds since the start, as log offsets count them.
@@ -158,6 +185,15 @@ fn write_sizes(caller: &mut Ctx<'_>, strings: &[String], count_ptr: i32, size_pt
     )
 }
 
+/// A `filestat` record: device, inode, type, links, size and three timestamps.
+fn filestat(kind: u8, size: u64) -> [u8; 64] {
+    let mut stat = [0u8; 64];
+    stat[16] = kind;
+    stat[24..32].copy_from_slice(&1u64.to_le_bytes());
+    stat[32..40].copy_from_slice(&size.to_le_bytes());
+    stat
+}
+
 /// The calls `linker` defines itself.
 const IMPLEMENTED: &[&str] = &[
     "args_sizes_get",
@@ -175,6 +211,17 @@ const IMPLEMENTED: &[&str] = &[
     "fd_prestat_dir_name",
     "fd_close",
     "fd_seek",
+    "fd_tell",
+    "fd_read",
+    "fd_readdir",
+    "fd_filestat_get",
+    "fd_sync",
+    "fd_datasync",
+    "path_open",
+    "path_filestat_get",
+    "path_create_directory",
+    "path_remove_directory",
+    "path_unlink_file",
 ];
 
 /// A linker with every import `module` needs. Calls the apps should never make are answered
@@ -212,8 +259,9 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
         "fd_write",
         |mut c: Ctx<'_>, fd: i32, iovs: i32, iovs_len: i32, written_ptr: i32| {
             let stream = match fd {
-                1 => 0,
-                2 => 1,
+                1 => Some(0),
+                2 => Some(1),
+                f if f > ROOT_FD => None,
                 _ => return EBADF,
             };
             let mut total = 0u32;
@@ -225,7 +273,16 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
                 let Some(bytes) = read(&c, buf as i32, len as usize) else {
                     return EFAULT;
                 };
-                c.data_mut().write(stream, &bytes);
+                match stream {
+                    Some(stream) => c.data_mut().write(stream, &bytes),
+                    None => {
+                        let now = c.data().now_secs();
+                        match c.data_mut().fs.write(fd as u32, &bytes, now) {
+                            Ok(_) => {}
+                            Err(e) => return e,
+                        }
+                    }
+                }
                 total += len;
             }
             errno(write(&mut c, written_ptr, &total.to_le_bytes()))
@@ -285,7 +342,10 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
             let Some((wait, userdata)) = wait else {
                 return Err(Error::host(RunsForever));
             };
-            if p.elapsed.saturating_add(wait) > HORIZON_NANOS {
+            if p.elapsed.saturating_add(wait) > HORIZON_NANOS
+                || p.lines.len() >= MAX_LINES
+                || p.fs.writes.len() >= MAX_WRITES
+            {
                 return Err(Error::host(RunsForever));
             }
             c.data_mut().elapsed += wait;
@@ -306,27 +366,214 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     })?;
     linker.func_wrap(MODULE, "sched_yield", |_: Ctx<'_>| ESUCCESS)?;
 
-    // stdin/stdout/stderr are character devices; there are no other descriptors, and no
-    // preopened directories.
+    // Descriptors 0-2 are character devices, 3 is the preopened root, and files and
+    // directories opened under it start at 4.
     linker.func_wrap(MODULE, "fd_fdstat_get", |mut c: Ctx<'_>, fd: i32, stat: i32| {
-        if !(0..=2).contains(&fd) {
-            return EBADF;
-        }
+        let kind = match fd {
+            0..=2 => 2, // character device
+            ROOT_FD => TYPE_DIRECTORY,
+            _ => {
+                let now = c.data().now_secs();
+                match c.data_mut().fs.stat_fd(fd as u32, now) {
+                    Ok((kind, _)) => kind,
+                    Err(e) => return e,
+                }
+            }
+        };
         let mut fdstat = [0u8; 24];
-        fdstat[0] = 2; // filetype: character device
+        fdstat[0] = kind;
         fdstat[8..16].copy_from_slice(&u64::MAX.to_le_bytes()); // rights: everything
+        fdstat[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
         errno(write(&mut c, stat, &fdstat))
     })?;
-    linker.func_wrap(MODULE, "fd_prestat_get", |_: Ctx<'_>, _fd: i32, _buf: i32| EBADF)?;
+    linker.func_wrap(MODULE, "fd_prestat_get", |mut c: Ctx<'_>, fd: i32, buf: i32| {
+        if fd != ROOT_FD {
+            return EBADF;
+        }
+        // tag 0 = directory, then the length of its name ("/").
+        let mut prestat = [0u8; 8];
+        prestat[4..8].copy_from_slice(&1u32.to_le_bytes());
+        errno(write(&mut c, buf, &prestat))
+    })?;
     linker.func_wrap(
         MODULE,
         "fd_prestat_dir_name",
-        |_: Ctx<'_>, _fd: i32, _p: i32, _l: i32| EBADF,
+        |mut c: Ctx<'_>, fd: i32, path: i32, len: i32| {
+            if fd != ROOT_FD {
+                return EBADF;
+            }
+            if len < 1 {
+                return EFAULT;
+            }
+            errno(write(&mut c, path, b"/"))
+        },
     )?;
-    linker.func_wrap(MODULE, "fd_close", |_: Ctx<'_>, _fd: i32| EBADF)?;
-    linker.func_wrap(MODULE, "fd_seek", |_: Ctx<'_>, _fd: i32, _o: i64, _w: i32, _p: i32| {
-        ESPIPE
+    linker.func_wrap(MODULE, "fd_close", |mut c: Ctx<'_>, fd: i32| {
+        if fd <= ROOT_FD {
+            return EBADF;
+        }
+        c.data_mut().fs.close(fd as u32)
     })?;
+    linker.func_wrap(
+        MODULE,
+        "fd_seek",
+        |mut c: Ctx<'_>, fd: i32, offset: i64, whence: i32, new_ptr: i32| {
+            if fd <= ROOT_FD {
+                return ESPIPE;
+            }
+            let now = c.data().now_secs();
+            match c.data_mut().fs.seek(fd as u32, offset, whence as u8, now) {
+                Ok(at) => errno(write(&mut c, new_ptr, &at.to_le_bytes())),
+                Err(e) => e,
+            }
+        },
+    )?;
+    linker.func_wrap(MODULE, "fd_tell", |mut c: Ctx<'_>, fd: i32, ptr: i32| {
+        if fd <= ROOT_FD {
+            return ESPIPE;
+        }
+        match c.data().fs.tell(fd as u32) {
+            Ok(at) => errno(write(&mut c, ptr, &at.to_le_bytes())),
+            Err(e) => e,
+        }
+    })?;
+    linker.func_wrap(
+        MODULE,
+        "fd_read",
+        |mut c: Ctx<'_>, fd: i32, iovs: i32, iovs_len: i32, read_ptr: i32| {
+            // Standard input is empty and never ends; only files can be read.
+            if fd <= ROOT_FD {
+                return ENOSYS;
+            }
+            let mut total = 0u32;
+            for i in 0..iovs_len {
+                let iov = iovs + 8 * i;
+                let (Some(buf), Some(len)) = (read_u32(&c, iov), read_u32(&c, iov + 4)) else {
+                    return EFAULT;
+                };
+                let now = c.data().now_secs();
+                let chunk = match c.data_mut().fs.read(fd as u32, len as usize, now) {
+                    Ok(chunk) => chunk,
+                    Err(e) => return e,
+                };
+                if !write(&mut c, buf as i32, &chunk) {
+                    return EFAULT;
+                }
+                total += chunk.len() as u32;
+                if chunk.len() < len as usize {
+                    break;
+                }
+            }
+            errno(write(&mut c, read_ptr, &total.to_le_bytes()))
+        },
+    )?;
+    linker.func_wrap(
+        MODULE,
+        "path_open",
+        |mut c: Ctx<'_>,
+         dirfd: i32,
+         _dirflags: i32,
+         path_ptr: i32,
+         path_len: i32,
+         oflags: i32,
+         rights: i64,
+         _inheriting: i64,
+         fdflags: i32,
+         fd_ptr: i32| {
+            if dirfd != ROOT_FD {
+                return EBADF;
+            }
+            let Some(path) = read(&c, path_ptr, path_len.max(0) as usize) else {
+                return EFAULT;
+            };
+            let path = String::from_utf8_lossy(&path).into_owned();
+            let now = c.data().now_secs();
+            let wants_write = rights & RIGHT_FD_WRITE != 0;
+            let append = fdflags & 1 != 0;
+            match c.data_mut().fs.open(&path, oflags as u16, wants_write, append, now) {
+                Ok(fd) => errno(write(&mut c, fd_ptr, &fd.to_le_bytes())),
+                Err(e) => e,
+            }
+        },
+    )?;
+    linker.func_wrap(MODULE, "fd_filestat_get", |mut c: Ctx<'_>, fd: i32, buf: i32| {
+        let (kind, size) = match fd {
+            0..=2 => (2, 0),
+            ROOT_FD => (TYPE_DIRECTORY, 0),
+            _ => {
+                let now = c.data().now_secs();
+                match c.data_mut().fs.stat_fd(fd as u32, now) {
+                    Ok(stat) => stat,
+                    Err(e) => return e,
+                }
+            }
+        };
+        errno(write(&mut c, buf, &filestat(kind, size)))
+    })?;
+    linker.func_wrap(
+        MODULE,
+        "path_filestat_get",
+        |mut c: Ctx<'_>, dirfd: i32, _flags: i32, path_ptr: i32, path_len: i32, buf: i32| {
+            if dirfd != ROOT_FD {
+                return EBADF;
+            }
+            let Some(path) = read(&c, path_ptr, path_len.max(0) as usize) else {
+                return EFAULT;
+            };
+            let now = c.data().now_secs();
+            match c.data_mut().fs.stat_path(&String::from_utf8_lossy(&path), now) {
+                Ok((kind, size)) => errno(write(&mut c, buf, &filestat(kind, size))),
+                Err(e) => e,
+            }
+        },
+    )?;
+    linker.func_wrap(
+        MODULE,
+        "fd_readdir",
+        |mut c: Ctx<'_>, fd: i32, buf: i32, buf_len: i32, cookie: i64, used_ptr: i32| {
+            let entries = match c.data().fs.readdir(fd as u32, cookie as u64) {
+                Ok(entries) => entries,
+                Err(e) => return e,
+            };
+            // A dirent is 24 bytes (next cookie, inode, name length, type) and then the name.
+            let mut stream = Vec::new();
+            for (i, (name, kind)) in entries.iter().enumerate() {
+                stream.extend_from_slice(&(cookie as u64 + i as u64 + 1).to_le_bytes());
+                stream.extend_from_slice(&(cookie as u64 + i as u64 + 1).to_le_bytes());
+                stream.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                stream.push(*kind);
+                stream.extend_from_slice(&[0, 0, 0]);
+                stream.extend_from_slice(name.as_bytes());
+            }
+            stream.truncate(buf_len.max(0) as usize);
+            errno(write(&mut c, buf, &stream) && write(&mut c, used_ptr, &(stream.len() as u32).to_le_bytes()))
+        },
+    )?;
+    for name in ["path_create_directory", "path_remove_directory", "path_unlink_file"] {
+        linker.func_wrap(
+            MODULE,
+            name,
+            move |mut c: Ctx<'_>, dirfd: i32, path_ptr: i32, path_len: i32| {
+                if dirfd != ROOT_FD {
+                    return EBADF;
+                }
+                let Some(path) = read(&c, path_ptr, path_len.max(0) as usize) else {
+                    return EFAULT;
+                };
+                let path = String::from_utf8_lossy(&path).into_owned();
+                let now = c.data().now_secs();
+                let fs = &mut c.data_mut().fs;
+                let result = match name {
+                    "path_create_directory" => fs.mkdir(&path, now),
+                    "path_remove_directory" => fs.rmdir(&path, now),
+                    _ => fs.unlink(&path, now),
+                };
+                result.err().unwrap_or(ESUCCESS)
+            },
+        )?;
+    }
+    linker.func_wrap(MODULE, "fd_sync", |_: Ctx<'_>, _fd: i32| ESUCCESS)?;
+    linker.func_wrap(MODULE, "fd_datasync", |_: Ctx<'_>, _fd: i32| ESUCCESS)?;
 
     for import in module.imports() {
         if import.module() != MODULE || IMPLEMENTED.contains(&import.name()) {

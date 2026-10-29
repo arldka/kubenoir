@@ -1,0 +1,11 @@
+[package]
+name = "scribe"
+version = "0.1.0"
+description = "A service that appends a line to a file every few seconds, like an application log"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+kit.workspace = true
+serde.workspace = true

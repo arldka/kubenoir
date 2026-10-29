@@ -8,6 +8,7 @@
 //! config, environment and seed always give the same `Program`.
 
 mod registry;
+pub mod vfs;
 mod wasi;
 
 use std::collections::BTreeMap;
@@ -17,6 +18,7 @@ use wasmi::{Module, Store, TrapCode};
 
 use crate::controllers::config::ImageSpec;
 pub use registry::{is_reference, AppSet};
+pub use vfs::{Mount, Timeline, VolEvent};
 use wasi::{Process, RunsForever};
 
 /// Instructions one run may execute before it is killed, so a runaway app cannot hang the game.
@@ -33,6 +35,9 @@ pub struct Program {
     pub lines: Vec<(i64, String)>,
     /// `(offset, exit code)`; `None` means the process runs forever.
     pub exit: Option<(i64, i32)>,
+    /// The files the run wrote or removed, stamped with the second (epoch) it did.
+    #[serde(default)]
+    pub writes: Vec<VolEvent>,
 }
 
 /// One container start.
@@ -43,7 +48,18 @@ pub struct Launch<'a> {
     pub started_at: i64,
     /// Seeds the app's randomness.
     pub seed: u64,
+    /// The volumes mounted into the container.
+    pub mounts: &'a [Mount],
+    /// What those volumes hold over time.
+    pub timeline: &'a Timeline,
 }
+
+/// Nothing in any volume, for tests of apps that have no volumes.
+#[cfg(test)]
+pub static NO_TIMELINE: Timeline = Timeline {
+    base: BTreeMap::new(),
+    events: Vec::new(),
+};
 
 /// Run the image's app for one container start. An image without an app is a silent process
 /// that never exits. (Scenario loading guarantees every referenced app is in `apps`.)
@@ -66,7 +82,17 @@ pub fn run(apps: &AppSet, spec: Option<&ImageSpec>, launch: &Launch<'_>) -> Prog
 /// Run `module` from `_start` to its exit, or until it is clearly running for good.
 fn execute(module: &Module, args: Vec<String>, launch: &Launch<'_>) -> Program {
     let env = launch.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    let mut store = Store::new(module.engine(), Process::new(args, env, launch.started_at, launch.seed));
+    let mut store = Store::new(
+        module.engine(),
+        Process::new(
+            args,
+            env,
+            launch.started_at,
+            launch.seed,
+            launch.mounts,
+            launch.timeline,
+        ),
+    );
     store.set_fuel(FUEL).expect("fuel metering is enabled");
 
     let outcome = wasi::linker(module)
@@ -76,6 +102,9 @@ fn execute(module: &Module, args: Vec<String>, launch: &Launch<'_>) -> Program {
     let code = match outcome {
         Ok(()) => Some(0),
         Err(e) if e.downcast_ref::<RunsForever>().is_some() => None,
+        // A service that wakes up now and then and ran out of fuel after simulating hours of
+        // that is still running; a loop that never sleeps is killed.
+        Err(e) if e.as_trap_code() == Some(TrapCode::OutOfFuel) && store.data().elapsed_secs() > 0 => None,
         Err(e) => Some(e.i32_exit_status().unwrap_or_else(|| {
             if e.as_trap_code() == Some(TrapCode::OutOfFuel) {
                 EXIT_KILLED
@@ -90,6 +119,7 @@ fn execute(module: &Module, args: Vec<String>, launch: &Launch<'_>) -> Program {
     Program {
         lines: std::mem::take(&mut process.lines),
         exit: code.map(|code| (process.elapsed_secs(), code)),
+        writes: std::mem::take(&mut process.fs.writes),
     }
 }
 
@@ -129,6 +159,8 @@ mod tests {
                 env: &env,
                 started_at: 1_000,
                 seed: 7,
+                mounts: &[],
+                timeline: &NO_TIMELINE,
             },
         )
     }
@@ -265,12 +297,232 @@ mod tests {
                     image: "x",
                     env: &BTreeMap::new(),
                     started_at: 0,
-                    seed: 0
+                    seed: 0,
+                    mounts: &[],
+                    timeline: &NO_TIMELINE,
                 }
             ),
             Program::default()
         );
         assert_eq!(launch(&ImageSpec::default(), &[]), Program::default());
+    }
+
+    fn mount(path: &str, volume: &str, read_only: bool) -> Mount {
+        Mount {
+            path: path.into(),
+            volume: volume.into(),
+            sub_path: String::new(),
+            read_only,
+            frozen: false,
+        }
+    }
+
+    fn volumes(volume: &str, files: &[(&str, &str)]) -> vfs::Volumes {
+        BTreeMap::from([(
+            volume.to_string(),
+            files.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        )])
+    }
+
+    fn launch_with(spec: &ImageSpec, env: &[(&str, &str)], mounts: &[Mount], timeline: &Timeline) -> Program {
+        let env: BTreeMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        run(
+            &AppSet::bundled(),
+            Some(spec),
+            &Launch {
+                image: "img:1",
+                env: &env,
+                started_at: 1_000,
+                seed: 7,
+                mounts,
+                timeline,
+            },
+        )
+    }
+
+    fn watcher(reload: bool) -> ImageSpec {
+        spec(
+            "watcher@0.1.0",
+            json!({"name": "profiler", "version": "1.0", "reload": reload}),
+        )
+    }
+
+    #[test]
+    fn the_watcher_reads_a_mounted_file_and_with_reload_notices_when_it_changes() {
+        let timeline = Timeline {
+            base: volumes("cfg", &[("mode", "fast\n")]),
+            events: vec![VolEvent {
+                at: 1_060,
+                volume: "cfg".into(),
+                path: "mode".into(),
+                content: Some("slow\n".into()),
+                append: false,
+            }],
+        };
+        let mounts = [mount("/etc/config", "cfg", true)];
+        let env = [("WATCH_FILES", "/etc/config/mode"), ("WATCH_INTERVAL", "30")];
+
+        let p = launch_with(&watcher(true), &env, &mounts, &timeline);
+        assert_eq!(p.exit, None);
+        assert_eq!(
+            p.lines,
+            [
+                (0, "INFO  profiler 1.0 starting (pid 1)".to_string()),
+                (0, "INFO  loaded /etc/config/mode: fast".to_string()),
+                (60, "INFO  reloaded /etc/config/mode: slow".to_string()),
+            ]
+        );
+
+        // Without hot reload the service keeps what it read at start.
+        let p = launch_with(&watcher(false), &env, &mounts, &timeline);
+        assert_eq!(
+            lines(&p),
+            [
+                "INFO  profiler 1.0 starting (pid 1)",
+                "INFO  loaded /etc/config/mode: fast"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_container_started_after_the_change_reads_the_new_content() {
+        let timeline = Timeline {
+            base: volumes("cfg", &[("mode", "fast\n")]),
+            events: vec![VolEvent {
+                at: 999,
+                volume: "cfg".into(),
+                path: "mode".into(),
+                content: Some("slow\n".into()),
+                append: false,
+            }],
+        };
+        let p = launch_with(
+            &watcher(false),
+            &[("WATCH_FILES", "/etc/config/mode")],
+            &[mount("/etc/config", "cfg", true)],
+            &timeline,
+        );
+        assert!(lines(&p).contains(&"INFO  loaded /etc/config/mode: slow"));
+    }
+
+    #[test]
+    fn missing_files_are_logged_with_the_reason_and_can_be_fatal() {
+        let mounts = [mount("/etc/config", "cfg", true)];
+        let timeline = Timeline {
+            base: volumes("cfg", &[]),
+            events: vec![],
+        };
+        let p = launch_with(
+            &watcher(false),
+            &[("WATCH_FILES", "/etc/config/nope,/elsewhere/x")],
+            &mounts,
+            &timeline,
+        );
+        assert_eq!(
+            lines(&p)[1..],
+            [
+                "ERROR cannot read /etc/config/nope: No such file or directory",
+                "ERROR cannot read /elsewhere/x: No such file or directory"
+            ]
+        );
+        assert_eq!(p.exit, None);
+        let p = launch_with(
+            &watcher(false),
+            &[("WATCH_FILES", "/etc/config/nope"), ("EXIT_ON_ERROR", "1")],
+            &mounts,
+            &timeline,
+        );
+        assert_eq!(p.exit, Some((0, 1)));
+        assert!(lines(&p)
+            .last()
+            .unwrap()
+            .contains("cannot start without /etc/config/nope"));
+        let p = launch_with(&watcher(false), &[], &mounts, &timeline);
+        assert_eq!(p.exit, Some((0, 1)));
+        assert!(lines(&p).contains(&"FATAL required environment variable WATCH_FILES is not set"));
+    }
+
+    #[test]
+    fn the_scribe_appends_to_scratch_space_and_reports_what_it_wrote() {
+        let scribe = spec("scribe@0.1.0", json!({"name": "scribe", "version": "1.0"}));
+        let mounts = [mount("/data", "scratch", false)];
+        let timeline = Timeline {
+            base: volumes("scratch", &[]),
+            events: vec![],
+        };
+        let env = [("SCRIBE_FILE", "/data/app.log"), ("SCRIBE_INTERVAL", "10")];
+        let p = launch_with(&scribe, &env, &mounts, &timeline);
+        assert_eq!(p.exit, None);
+        assert_eq!(
+            &lines(&p)[1..4],
+            [
+                "INFO  wrote entry 1 to /data/app.log",
+                "INFO  wrote entry 2 to /data/app.log",
+                "INFO  wrote entry 3 to /data/app.log"
+            ]
+        );
+        assert_eq!(p.lines[2].0, 10, "ten seconds apart");
+        // Each append is an event with the file's whole content at that second.
+        assert_eq!(p.writes[0].at, 1_000);
+        assert_eq!(p.writes[0].content.as_deref(), Some("entry 1\n"));
+        // After the file exists each entry is just the text added at the end.
+        assert_eq!(
+            (p.writes[2].content.as_deref(), p.writes[2].append),
+            (Some("entry 3\n"), true)
+        );
+        assert_eq!(p.writes[2].at, 1_020);
+
+        // A restarted container carries on the same file.
+        let timeline = Timeline {
+            base: volumes("scratch", &[("app.log", "entry 1\nentry 2\n")]),
+            events: vec![],
+        };
+        let again = launch_with(&scribe, &env, &mounts, &timeline);
+        assert_eq!(
+            (again.writes[0].content.as_deref(), again.writes[0].append),
+            (Some("entry 1\n"), true)
+        );
+    }
+
+    #[test]
+    fn writing_to_a_read_only_mount_fails_with_the_real_reason() {
+        let scribe = spec("scribe@0.1.0", json!({"name": "scribe", "version": "1.0"}));
+        let mounts = [mount("/etc/config", "cfg", true)];
+        let timeline = Timeline {
+            base: volumes("cfg", &[("x", "1")]),
+            events: vec![],
+        };
+        let env = [("SCRIBE_FILE", "/etc/config/app.log")];
+        let p = launch_with(&scribe, &env, &mounts, &timeline);
+        assert_eq!(
+            lines(&p)[1],
+            "ERROR cannot write /etc/config/app.log: Read-only file system"
+        );
+        assert!(p.writes.is_empty());
+        let strict = spec("scribe@0.1.0", json!({"name": "scribe", "exitOnError": true}));
+        let p = launch_with(&strict, &env, &mounts, &timeline);
+        assert_eq!(p.exit, Some((0, 1)));
+        // And a path outside every mount does not exist at all.
+        let p = launch_with(&scribe, &[("SCRIBE_FILE", "/nowhere/app.log")], &mounts, &timeline);
+        assert_eq!(
+            lines(&p)[1],
+            "ERROR cannot write /nowhere/app.log: No such file or directory"
+        );
+    }
+
+    #[test]
+    fn apps_that_do_not_use_files_are_unaffected_by_having_volumes() {
+        let timeline = Timeline {
+            base: volumes("cfg", &[("a", "1")]),
+            events: vec![],
+        };
+        let with = launch_with(
+            &db_client(),
+            &[("DATABASE_URL", DATABASE_URL)],
+            &[mount("/etc/c", "cfg", true)],
+            &timeline,
+        );
+        assert_eq!(with, launch(&db_client(), &[("DATABASE_URL", DATABASE_URL)]));
     }
 
     /// Run a hand-written module that imports `fd_write` (as `write`) and `proc_exit`.
@@ -291,6 +543,8 @@ mod tests {
             env: &env,
             started_at: 0,
             seed: 0,
+            mounts: &[],
+            timeline: &NO_TIMELINE,
         };
         execute(&module, vec![], &launch)
     }

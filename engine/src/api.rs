@@ -676,6 +676,26 @@ fn validate_pod_spec(spec: &Value, path: &str, causes: &mut Vec<String>) {
     if containers.is_empty() {
         causes.push(format!("{path}.containers: Required value"));
     }
+    let volumes = spec["volumes"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut volume_names: Vec<&str> = Vec::new();
+    for (i, volume) in volumes.iter().enumerate() {
+        let name = volume["name"].as_str().unwrap_or_default();
+        if name.is_empty() {
+            causes.push(format!("{path}.volumes[{i}].name: Required value"));
+        } else if volume_names.contains(&name) {
+            causes.push(format!("{path}.volumes[{i}].name: Duplicate value: \"{name}\""));
+        } else if !is_dns_label(name) {
+            causes.push(format!(
+                "{path}.volumes[{i}].name: Invalid value: \"{name}\": {LABEL_HELP}"
+            ));
+        }
+        volume_names.push(name);
+        if volume.as_object().is_some_and(|fields| fields.len() < 2) {
+            causes.push(format!(
+                "{path}.volumes[{i}]: Required value: must specify a volume type"
+            ));
+        }
+    }
     for (field, list) in [
         ("containers", containers),
         (
@@ -684,6 +704,16 @@ fn validate_pod_spec(spec: &Value, path: &str, causes: &mut Vec<String>) {
         ),
     ] {
         for (i, container) in list.iter().enumerate() {
+            for (j, mount) in container["volumeMounts"].as_array().into_iter().flatten().enumerate() {
+                let at = format!("{path}.{field}[{i}].volumeMounts[{j}]");
+                let mounted = mount["name"].as_str().unwrap_or_default();
+                if !volume_names.contains(&mounted) {
+                    causes.push(format!("{at}.name: Not found: \"{mounted}\""));
+                }
+                if mount["mountPath"].as_str().unwrap_or_default().is_empty() {
+                    causes.push(format!("{at}.mountPath: Required value"));
+                }
+            }
             let name = container["name"].as_str().unwrap_or_default();
             if name.is_empty() {
                 causes.push(format!("{path}.{field}[{i}].name: Required value"));

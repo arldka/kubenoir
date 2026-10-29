@@ -13,6 +13,7 @@ mod namespace;
 mod pods;
 mod replicaset;
 mod scheduler;
+pub(crate) mod volumes;
 
 pub use kubelet::{select_log_instance, LogSelection};
 pub use pods::{delete_pod, is_owned_by};

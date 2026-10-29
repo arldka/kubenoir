@@ -243,6 +243,14 @@ pub fn describe_pod(pod: &Pod, events: &[Event], now: i64) -> String {
         .collect();
     out.extend(indented(&format_table_with_gap(&["Type", "Status"], &rows, 3), 2));
 
+    if let Some(volumes) = spec.and_then(|s| s.volumes.as_deref()).filter(|v| !v.is_empty()) {
+        out.push("Volumes:".into());
+        for volume in volumes {
+            out.push(format!("  {}:", volume.name));
+            push_block(&mut out, 4, &volume_rows(volume));
+        }
+    }
+
     let mut tail: Vec<(String, Vec<String>)> = vec![
         (
             "QoS Class:".into(),
@@ -416,9 +424,74 @@ fn container_lines(out: &mut Vec<String>, c: &Container, status: Option<&Contain
         }
         _ => out.push(kv(INDENT, "Environment:", NONE, value_col)),
     }
-    if status.is_none() {
-        out.push(kv(INDENT, "Mounts:", NONE, value_col));
+    match c.volume_mounts.as_deref() {
+        Some(mounts) if !mounts.is_empty() => {
+            out.push(kv(INDENT, "Mounts:", "", value_col));
+            for m in mounts {
+                let mode = if m.read_only == Some(true) { "ro" } else { "rw" };
+                let path = m
+                    .sub_path
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .map(|p| format!(",path=\"{p}\""))
+                    .unwrap_or_default();
+                out.push(format!(
+                    "{}{} from {} ({mode}{path})",
+                    " ".repeat(INDENT + 2),
+                    m.mount_path,
+                    m.name
+                ));
+            }
+        }
+        _ if status.is_none() => out.push(kv(INDENT, "Mounts:", NONE, value_col)),
+        _ => {}
     }
+}
+
+/// The lines describing one volume of a pod.
+fn volume_rows(volume: &k8s_openapi::api::core::v1::Volume) -> Vec<(String, Vec<String>)> {
+    let row = |key: &str, value: String| (key.to_string(), vec![value]);
+    if let Some(cm) = &volume.config_map {
+        return vec![
+            row("Type:", "ConfigMap (a volume populated by a ConfigMap)".into()),
+            row("Name:", cm.name.clone()),
+            row("Optional:", cm.optional.unwrap_or(false).to_string()),
+        ];
+    }
+    if let Some(secret) = &volume.secret {
+        return vec![
+            row("Type:", "Secret (a volume populated by a Secret)".into()),
+            row("SecretName:", secret.secret_name.clone().unwrap_or_default()),
+            row("Optional:", secret.optional.unwrap_or(false).to_string()),
+        ];
+    }
+    if let Some(empty) = &volume.empty_dir {
+        return vec![
+            row(
+                "Type:",
+                "EmptyDir (a temporary directory that shares a pod's lifetime)".into(),
+            ),
+            row("Medium:", empty.medium.clone().unwrap_or_default()),
+            row(
+                "SizeLimit:",
+                empty
+                    .size_limit
+                    .as_ref()
+                    .map_or_else(|| "<unset>".into(), |q| q.0.clone()),
+            ),
+        ];
+    }
+    if let Some(claim) = &volume.persistent_volume_claim {
+        return vec![
+            row(
+                "Type:",
+                "PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)".into(),
+            ),
+            row("ClaimName:", claim.claim_name.clone()),
+            row("ReadOnly:", claim.read_only.unwrap_or(false).to_string()),
+        ];
+    }
+    vec![row("Type:", "(not shown by this terminal)".into())]
 }
 
 fn state_lines(out: &mut Vec<String>, title: &str, state: Option<&ContainerState>, value_col: usize) {
