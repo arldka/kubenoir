@@ -413,6 +413,7 @@ mod tests {
                 "--no-headers",
                 "--output",
                 "--selector",
+                "--show-labels",
                 "-A",
                 "-l",
                 "-n",

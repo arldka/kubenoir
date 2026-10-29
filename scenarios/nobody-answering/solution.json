@@ -1,0 +1,8 @@
+[
+  { "kind": "eval", "command": "kubectl exec toolbox -- curl http://payment" },
+  { "kind": "eval", "command": "kubectl describe service payment" },
+  { "kind": "eval", "command": "kubectl get pods --show-labels" },
+  { "kind": "eval", "command": "kubectl patch service payment -p '{\"spec\":{\"selector\":{\"app\":\"payments\"}}}'" },
+  { "kind": "eval", "command": "kubectl exec toolbox -- curl http://payment" },
+  { "kind": "advance", "seconds": 30 }
+]

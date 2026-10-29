@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 2,
+  "id": "nobody-answering",
+  "title": "Nobody's Answering",
+  "briefing": "The checkout page times out whenever it asks for a payment. The payments pods look perfectly healthy, and the Service in front of them exists, yet nobody answers. A toolbox pod is available to try the Service from the inside: `kubectl exec toolbox -- curl http://payment`. Find out why the call goes nowhere and make it answer, without touching the payments pods.",
+  "objective": "Make http://payment answer from inside the cluster.",
+  "hints": [
+    "Try the call yourself from the toolbox and read curl's error. 'Connection refused' on a Service usually means that nothing stands behind it.",
+    "A Service sends traffic to the pods its selector matches. Compare what the Service selects with the labels the pods really carry.",
+    "`kubectl describe service payment` shows the selector and the endpoints it found; `kubectl get pods --show-labels` shows the labels.",
+    "Change the Service to select the pods' labels (`kubectl patch service payment -p ...`, or apply a corrected manifest). The pods themselves are not the problem."
+  ],
+  "success": {
+    "stableSeconds": 10,
+    "assert": [
+      {
+        "label": "the payment Service has both payments pods behind it",
+        "select": { "kind": "Endpoints", "name": "payment" },
+        "each": [
+          { "path": "subsets[0].addresses[0].ip", "exists": true },
+          { "path": "subsets[0].addresses[1].ip", "exists": true },
+          { "path": "subsets[0].notReadyAddresses", "exists": false }
+        ]
+      },
+      {
+        "label": "both payments pods are running",
+        "select": { "kind": "Pod", "labels": { "app": "payments" } },
+        "count": { "exactly": 2 },
+        "each": [{ "path": "status.conditions[type=Ready].status", "equals": "True" }]
+      }
+    ],
+    "constraints": [
+      {
+        "label": "the payments Deployment was left alone",
+        "select": { "kind": "Deployment", "name": "payments" },
+        "each": [{ "path": "metadata.generation", "equals": 1 }]
+      },
+      {
+        "label": "no payments pod was disturbed",
+        "select": { "kind": "Pod", "labels": { "app": "payments" } },
+        "count": { "min": 2 },
+        "each": [{ "path": "status.containerStatuses[0].restartCount", "equals": 0 }]
+      },
+      {
+        "label": "the payment Service was not deleted",
+        "forbid": { "verb": "delete", "resource": "services", "name": "payment" }
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "refused",
+      "clue": "From inside the cluster the call is refused: the Service exists, but nothing answers behind it.",
+      "when": { "command": { "verb": "exec", "name": "toolbox" } }
+    },
+    {
+      "id": "no-endpoints",
+      "clue": "The Service has no endpoints at all: its selector, app=payment, matches no ready pod.",
+      "when": {
+        "anyOf": [
+          { "command": { "verb": "describe", "resource": "services", "name": "payment" } },
+          { "command": { "verb": "get", "resource": "endpoints" } },
+          { "command": { "verb": "get", "resource": "endpointslices" } }
+        ]
+      }
+    },
+    {
+      "id": "labels",
+      "clue": "The pods are labelled app=payments, with an s, and tier=backend. The Service selects app=payment.",
+      "when": {
+        "anyOf": [
+          { "command": { "verb": "describe", "resource": "pods", "name": "payments-*" } },
+          { "command": { "verb": "describe", "resource": "deployments", "name": "payments" } },
+          { "command": { "verb": "get", "resource": "pods" } }
+        ]
+      }
+    }
+  ],
+  "images": {
+    "registry.example.com/payments:1.0": {
+      "pullSeconds": 3,
+      "app": "http-responder@0.2.0",
+      "config": { "name": "payments", "version": "1.0", "portEnv": "PORT" }
+    },
+    "toolbox:1": { "pullSeconds": 2, "app": "nginx@0.1.0" }
+  },
+  "cluster": {
+    "startedAt": "2026-10-27T08:55:00Z",
+    "now": "2026-10-27T09:00:00Z",
+    "manifests": ["manifests/nodes.yaml", "manifests/workloads.yaml"]
+  }
+}

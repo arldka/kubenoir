@@ -97,6 +97,7 @@ fn get(args: &GetArgs, store: &ClusterStore, now: &Time) -> Result<String, Store
             single: args.names.len() == 1,
             all_namespaces: args.all_namespaces && info.namespaced,
             no_headers: args.no_headers,
+            show_labels: args.show_labels,
             now,
         };
         match render(info, &items, &options) {

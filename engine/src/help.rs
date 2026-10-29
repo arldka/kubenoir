@@ -75,6 +75,7 @@ pub const VERBS: &[Verb] = &[
         flags: &[
             flag(Some("-A"), "--all-namespaces", "false", false, "If present, list the requested object(s) across all namespaces"),
             flag(None, "--no-headers", "false", false, "Do not print the table's header line"),
+            flag(None, "--show-labels", "false", false, "When printing, show all labels as the last column"),
             NAMESPACE,
             flag(Some("-o"), "--output", "''", true, "Output format. One of: json, jsonpath=TEMPLATE, name, wide, yaml"),
             flag(
@@ -837,6 +838,7 @@ mod tests {
                 "-A",
                 "--all-namespaces",
                 "--no-headers",
+                "--show-labels",
                 "-n",
                 "--namespace",
                 "-o",

@@ -115,7 +115,6 @@ fn subcommands_that_exist_but_are_not_offered_say_so() {
 fn flags_that_exist_but_are_not_offered_say_so_and_typos_do_not() {
     let mut e = engine();
     for (line, flag) in [
-        ("kubectl get pods --show-labels", "--show-labels"),
         ("kubectl get pods -w", "-w"),
         ("kubectl get pods --watch", "--watch"),
         (

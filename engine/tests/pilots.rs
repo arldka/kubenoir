@@ -6,6 +6,9 @@ mod common;
 use engine::Engine;
 use serde_json::{json, Value};
 
+/// One way of playing a case: its name, and what the player does.
+type Way<'a> = (&'a str, &'a dyn Fn(&mut Engine));
+
 fn status(e: &Engine) -> Value {
     serde_json::to_value(e.status()).unwrap()
 }
@@ -133,7 +136,6 @@ mod changing_the_story {
 
     #[test]
     fn every_way_to_recreate_the_informant_closes_the_case() {
-        type Way<'a> = (&'a str, &'a dyn Fn(&mut Engine));
         let ways: [Way; 4] = [
             ("delete then run", &|e| {
                 e.eval("kubectl delete pod informant -n homicide");
@@ -407,5 +409,99 @@ mod wrong_mugshot {
         e.eval(&format!("kubectl describe pod {name}"));
         e.eval("cat case/registry-note.txt");
         assert_eq!(status(&e)["findings"]["found"].as_array().unwrap().len(), 2);
+    }
+}
+
+mod nobody_answering {
+    use super::*;
+
+    fn engine() -> Engine {
+        common::engine("nobody-answering")
+    }
+
+    const CURL: &str = "kubectl exec toolbox -- curl -s http://payment";
+
+    fn service(selector: &str) -> String {
+        format!(
+            "apiVersion: v1\nkind: Service\nmetadata:\n  name: payment\nspec:\n  selector: {selector}\n  ports:\n  - port: 80\n    targetPort: http\n"
+        )
+    }
+
+    #[test]
+    fn the_call_is_refused_and_the_service_shows_why() {
+        let mut e = engine();
+        assert_eq!(
+            e.eval("kubectl exec toolbox -- curl http://payment"),
+            "curl: (7) Failed to connect to payment port 80 after 2 ms: Connection refused\ncommand terminated with exit code 7"
+        );
+        let describe = e.eval("kubectl describe service payment");
+        assert!(
+            describe.contains("app=payment\n") && describe.contains("Endpoints:         <none>"),
+            "{describe}"
+        );
+        let labels = e.eval("kubectl get pods --show-labels");
+        assert!(labels.lines().next().unwrap().ends_with("LABELS"), "{labels}");
+        assert!(
+            labels.contains("app=payments,pod-template-hash=") && labels.contains(",tier=backend"),
+            "{labels}"
+        );
+        assert!(e
+            .eval("kubectl get pods -l app=payment")
+            .starts_with("No resources found"));
+        assert!(!solved(&e));
+    }
+
+    #[test]
+    fn selecting_the_labels_the_pods_really_have_closes_the_case() {
+        let ways: [Way; 3] = [
+            ("patch app", &|e| {
+                e.eval(r#"kubectl patch service payment -p '{"spec":{"selector":{"app":"payments"}}}'"#);
+            }),
+            ("apply app", &|e| {
+                e.write_file("svc.yaml", &service("{app: payments}"));
+                e.eval("kubectl apply -f svc.yaml");
+            }),
+            ("replace with tier", &|e| {
+                e.write_file("svc.yaml", &service("{tier: backend}"));
+                e.eval("kubectl replace -f svc.yaml");
+            }),
+        ];
+        for (name, play) in ways {
+            let mut e = engine();
+            play(&mut e);
+            assert_eq!(e.eval(CURL), "payments 1.0", "{name}");
+            e.advance(20);
+            assert!(solved(&e), "{name}");
+            assert_eq!(status(&e)["outcome"], "closed", "{name}");
+        }
+    }
+
+    #[test]
+    fn a_selector_that_still_matches_nothing_does_not() {
+        let mut e = engine();
+        e.eval(r#"kubectl patch service payment -p '{"spec":{"selector":{"app":"paymentz"}}}'"#);
+        e.advance(20);
+        assert!(!solved(&e));
+        assert!(e.eval(CURL).is_empty() || e.eval(CURL).contains("exit code 7"));
+    }
+
+    #[test]
+    fn relabelling_the_pods_instead_costs_the_case() {
+        // Touching the Deployment breaks the "leave the payments pods alone" rule.
+        let mut e = engine();
+        e.eval("kubectl set env deployment/payments EXTRA=1");
+        e.eval(r#"kubectl patch service payment -p '{"spec":{"selector":{"app":"payments"}}}'"#);
+        e.advance(60);
+        assert!(solved(&e));
+        assert_eq!(status(&e)["outcome"], "closedWithCost");
+    }
+
+    #[test]
+    fn the_findings_are_discoverable() {
+        let mut e = engine();
+        e.eval("kubectl exec toolbox -- curl http://payment");
+        e.eval("kubectl describe service payment");
+        e.eval("kubectl get pods --show-labels");
+        assert_eq!(status(&e)["findings"]["found"].as_array().unwrap().len(), 3);
     }
 }

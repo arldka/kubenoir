@@ -98,6 +98,8 @@ pub struct GetArgs {
     pub all_namespaces: bool,
     /// `--no-headers`
     pub no_headers: bool,
+    /// `--show-labels`
+    pub show_labels: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1304,7 +1306,6 @@ const UNSUPPORTED_LONG_FLAGS: &[&str] = &[
     "server",
     "server-side",
     "show-kind",
-    "show-labels",
     "show-managed-fields",
     "since",
     "since-time",
@@ -1446,7 +1447,7 @@ fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
     let mut namespace: Option<String> = None;
     let mut output = OutputFormat::Table;
     let mut selector = Selector::default();
-    let (mut all_namespaces, mut no_headers) = (false, false);
+    let (mut all_namespaces, mut no_headers, mut show_labels) = (false, false, false);
 
     let parse_selector = |text: &str| Selector::parse(text).map_err(ParseError::InvalidSelector);
 
@@ -1466,6 +1467,8 @@ fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
             all_namespaces = true;
         } else if arg == "--no-headers" {
             no_headers = true;
+        } else if arg == "--show-labels" {
+            show_labels = true;
         } else if arg.starts_with("--") {
             return Err(unknown_flag(arg));
         } else if let Some(value) = arg.strip_prefix("-o") {
@@ -1491,6 +1494,7 @@ fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
         selector,
         all_namespaces,
         no_headers,
+        show_labels,
     })
 }
 
@@ -1904,6 +1908,7 @@ mod tests {
             selector: Selector::default(),
             all_namespaces: false,
             no_headers: false,
+            show_labels: false,
         }))
     }
 

@@ -39,6 +39,8 @@ pub struct RenderOptions<'a> {
     /// `-A`: tables get a NAMESPACE column.
     pub all_namespaces: bool,
     pub no_headers: bool,
+    /// `--show-labels`: tables end with a LABELS column.
+    pub show_labels: bool,
     pub now: &'a Time,
 }
 
@@ -92,6 +94,7 @@ struct Table {
     headers: Vec<&'static str>,
     rows: Vec<Vec<String>>,
     namespaces: Vec<String>,
+    labels: Vec<String>,
 }
 
 impl Table {
@@ -100,14 +103,36 @@ impl Table {
         rows: Vec<Vec<String>>,
         metas: impl Iterator<Item = &'a ObjectMeta>,
     ) -> Table {
+        let metas: Vec<&ObjectMeta> = metas.collect();
         Table {
             headers,
             rows,
-            namespaces: metas.map(|m| m.namespace.clone().unwrap_or_default()).collect(),
+            namespaces: metas.iter().map(|m| m.namespace.clone().unwrap_or_default()).collect(),
+            labels: metas
+                .iter()
+                .map(|m| {
+                    m.labels
+                        .iter()
+                        .flatten()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .collect(),
         }
     }
 
     fn print(mut self, options: &RenderOptions<'_>) -> String {
+        if options.show_labels {
+            self.headers.push("LABELS");
+            for (row, labels) in self.rows.iter_mut().zip(&self.labels) {
+                row.push(if labels.is_empty() {
+                    "<none>".into()
+                } else {
+                    labels.clone()
+                });
+            }
+        }
         if options.all_namespaces {
             self.headers.insert(0, "NAMESPACE");
             for (row, namespace) in self.rows.iter_mut().zip(self.namespaces) {
@@ -879,6 +904,7 @@ mod tests {
             single,
             all_namespaces: false,
             no_headers: false,
+            show_labels: false,
             now,
         };
         render(crate::api::info(kind).unwrap(), items, &options).unwrap()
