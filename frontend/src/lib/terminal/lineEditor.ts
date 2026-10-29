@@ -1,5 +1,5 @@
 import type { History } from './history';
-import type { Key } from './keys';
+import type { CtrlKey, Key } from './keys';
 
 /** What the engine says could complete the word before the cursor. */
 export interface Completion {
@@ -102,10 +102,12 @@ export class LineEditor {
 				return this.browse(1);
 			case 'ctrl':
 				return this.control(key.key);
+			case 'escape':
+				return 'none';
 		}
 	}
 
-	private control(key: 'a' | 'c' | 'd' | 'e' | 'k' | 'l' | 'u' | 'w'): Action {
+	private control(key: CtrlKey): Action {
 		switch (key) {
 			case 'a':
 				return this.moveTo(0);
@@ -132,6 +134,9 @@ export class LineEditor {
 			case 'd':
 				// Like a shell, Ctrl+D deletes under the cursor; on an empty line there is nothing to exit.
 				return this.buffer ? this.handle({ type: 'delete' }) : 'bell';
+			default:
+				// Ctrl+R and Ctrl+Z mean something to the editor, nothing to the prompt.
+				return 'none';
 		}
 	}
 

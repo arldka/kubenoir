@@ -13,17 +13,22 @@ export type Key =
 	| { type: 'home' }
 	| { type: 'end' }
 	| { type: 'tab' }
-	| { type: 'ctrl'; key: 'a' | 'c' | 'd' | 'e' | 'k' | 'l' | 'u' | 'w' };
+	| { type: 'escape' }
+	| { type: 'ctrl'; key: CtrlKey };
 
-const CTRL: Record<number, 'a' | 'c' | 'd' | 'e' | 'k' | 'l' | 'u' | 'w'> = {
+export type CtrlKey = 'a' | 'c' | 'd' | 'e' | 'k' | 'l' | 'r' | 'u' | 'w' | 'z';
+
+const CTRL: Record<number, CtrlKey> = {
 	0x01: 'a',
 	0x03: 'c',
 	0x04: 'd',
 	0x05: 'e',
 	0x0b: 'k',
 	0x0c: 'l',
+	0x12: 'r',
 	0x15: 'u',
-	0x17: 'w'
+	0x17: 'w',
+	0x1a: 'z'
 };
 
 /** Map a CSI final byte (plus its numeric parameters) to a key. */
@@ -61,8 +66,11 @@ function csiKey(final: string, params: number[]): Key | null {
 /**
  * Split raw terminal input into keys. A paste arrives as one string, so it naturally becomes
  * `char`, `enter`, `char`, ... Other control characters and unknown escape sequences are dropped.
+ *
+ * With `editor`, a lone Escape is a key of its own (the prompt has no use for it), and Esc
+ * followed by `b` or `f` is Escape then the letter, not Alt+b / Alt+f.
  */
-export function parseKeys(data: string): Key[] {
+export function parseKeys(data: string, editor = false): Key[] {
 	const keys: Key[] = [];
 	let text = '';
 	const flush = () => {
@@ -92,6 +100,8 @@ export function parseKeys(data: string): Key[] {
 				const final = data[i + 2];
 				push(final ? csiKey(final, []) : null);
 				i += 2;
+			} else if (editor) {
+				push({ type: 'escape' });
 			} else if (next === 'b') {
 				push({ type: 'wordLeft' });
 				i += 1;

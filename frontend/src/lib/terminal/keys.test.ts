@@ -65,4 +65,15 @@ describe('parseKeys', () => {
 	it('keeps non-ASCII text intact', () => {
 		expect(parseKeys('café')).toEqual([{ type: 'char', text: 'café' }]);
 	});
+
+	it('in editor mode a lone Escape is a key, and Esc then b is not Alt+b', () => {
+		expect(parseKeys('\x1b', true)).toEqual([{ type: 'escape' }]);
+		expect(parseKeys('a\x1bb', true)).toEqual([{ type: 'char', text: 'a' }, { type: 'escape' }, { type: 'char', text: 'b' }]);
+		expect(parseKeys('\x1b[A\x1b', true)).toEqual([{ type: 'up' }, { type: 'escape' }]);
+		expect(parseKeys('\x1b')).toEqual([]);
+		expect(parseKeys('\x12\x1a', true)).toEqual([
+			{ type: 'ctrl', key: 'r' },
+			{ type: 'ctrl', key: 'z' }
+		]);
+	});
 });
