@@ -41,6 +41,51 @@ pub struct Program {
     /// `(offset, port)` for every port the app declared it listens on.
     #[serde(default)]
     pub listens: Vec<(i64, u16)>,
+    /// The connections the run made, in order, with what they got.
+    #[serde(default)]
+    pub calls: Vec<NetCall>,
+}
+
+/// What reaching another service gave: the HTTP status the program there answered with, or a
+/// negative code when no connection was made (the host-call ABI, see `kit::ask`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetReply {
+    pub code: i32,
+    pub body: String,
+}
+
+impl NetReply {
+    pub const NX_DOMAIN: i32 = -1;
+    pub const REFUSED: i32 = -2;
+    pub const TIMEOUT: i32 = -3;
+
+    pub fn refused() -> Self {
+        NetReply {
+            code: Self::REFUSED,
+            body: String::new(),
+        }
+    }
+}
+
+/// One connection attempt a run made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetCall {
+    pub host: String,
+    pub port: i64,
+    pub method: String,
+    pub path: String,
+    pub reply: NetReply,
+}
+
+/// Where a run's connections go.
+#[derive(Clone, Copy)]
+pub enum Net<'a> {
+    /// Nowhere: every connection is refused.
+    None,
+    /// The connectivity oracle, asked as the run happens.
+    Live(&'a dyn Fn(&str, i64, &str, &str) -> NetReply),
+    /// The answers an earlier run of the same container got, in order.
+    Replay(&'a [NetCall]),
 }
 
 /// What a listening app answers to one request.
@@ -62,6 +107,8 @@ pub struct Launch<'a> {
     pub mounts: &'a [Mount],
     /// What those volumes hold over time.
     pub timeline: &'a Timeline,
+    /// Where the app's connections go.
+    pub net: Net<'a>,
 }
 
 /// Nothing in any volume, for tests of apps that have no volumes.
@@ -144,6 +191,7 @@ fn execute(module: &Module, args: Vec<String>, launch: &Launch<'_>) -> Program {
             launch.seed,
             launch.mounts,
             launch.timeline,
+            launch.net,
         ),
     );
     store.set_fuel(FUEL).expect("fuel metering is enabled");
@@ -174,6 +222,7 @@ fn execute(module: &Module, args: Vec<String>, launch: &Launch<'_>) -> Program {
         exit: code.map(|code| (process.elapsed_secs(), code)),
         writes: std::mem::take(&mut process.fs.writes),
         listens: std::mem::take(&mut process.listens),
+        calls: std::mem::take(&mut process.calls),
     }
 }
 
@@ -194,7 +243,7 @@ mod tests {
 
     fn db_client() -> ImageSpec {
         spec(
-            "db-client@0.1.0",
+            "db-client@0.2.0",
             json!({
                 "name": "payments-api", "version": "2.4.1",
                 "database": {"host": "postgres.default.svc.cluster.local", "port": 5432,
@@ -215,6 +264,7 @@ mod tests {
                 seed: 7,
                 mounts: &[],
                 timeline: &NO_TIMELINE,
+                net: Net::None,
             },
         )
     }
@@ -336,7 +386,7 @@ mod tests {
 
     #[test]
     fn bad_config_exits_with_code_2() {
-        let p = launch(&spec("db-client@0.1.0", json!({"name": 1})), &[]);
+        let p = launch(&spec("db-client@0.2.0", json!({"name": 1})), &[]);
         assert_eq!(p.exit, Some((0, 2)));
         assert!(lines(&p)[0].starts_with("FATAL invalid image config"), "{p:?}");
     }
@@ -354,6 +404,7 @@ mod tests {
                     seed: 0,
                     mounts: &[],
                     timeline: &NO_TIMELINE,
+                    net: Net::None,
                 }
             ),
             Program::default()
@@ -390,6 +441,7 @@ mod tests {
                 seed: 7,
                 mounts,
                 timeline,
+                net: Net::None,
             },
         )
     }
@@ -599,6 +651,7 @@ mod tests {
             seed: 0,
             mounts: &[],
             timeline: &NO_TIMELINE,
+            net: Net::None,
         };
         execute(&module, vec![], &launch)
     }
@@ -653,6 +706,7 @@ mod server_tests {
             seed: 1,
             mounts: &[],
             timeline: &NO_TIMELINE,
+            net: Net::None,
         }
     }
 

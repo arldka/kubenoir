@@ -501,7 +501,7 @@ mod tests {
         format!(
             r#"{{
             "id": "w",
-            "images": {{"app:1": {{"app": "db-client@0.1.0", "config": {{"name": "payments-api", "version": "1",
+            "images": {{"app:1": {{"app": "db-client@0.2.0", "config": {{"name": "payments-api", "version": "1",
                 "database": {{"host": "db", "port": 5432, "user": "u", "name": "pay"}}}}}}}},
             "cluster": {{
                 "startedAt": "{started_at}", "now": "{NOW}", "nodes": ["worker-1", "worker-2"],

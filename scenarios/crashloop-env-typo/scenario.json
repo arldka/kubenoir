@@ -156,7 +156,7 @@
   "images": {
     "registry.example.com/payments-api:2.4.1": {
       "pullSeconds": 3,
-      "app": "db-client@0.1.0",
+      "app": "db-client@0.2.0",
       "config": {
         "name": "payments-api",
         "version": "2.4.1",

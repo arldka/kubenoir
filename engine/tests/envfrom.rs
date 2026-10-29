@@ -4,7 +4,7 @@
 use engine::{AppSet, Engine, Files};
 
 const SCENARIO: &str = r#"{"schemaVersion":2,"id":"envfrom","cluster":{"now":"2026-10-27T18:30:00Z","manifests":["nodes.yaml"]},
-    "images":{"db:1":{"pullSeconds":1,"app":"db-client@0.1.0","config":{
+    "images":{"db:1":{"pullSeconds":1,"app":"db-client@0.2.0","config":{
         "name":"db","version":"1","databaseUrlEnv":"DATABASE_URL","portEnv":"PORT",
         "database":{"host":"postgres.default.svc.cluster.local","port":5432,"user":"payments","name":"payments","password":"s3cret"}}}}}"#;
 

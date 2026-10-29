@@ -5,7 +5,7 @@ Rust (`std::env::var`, `println!`, `std::thread::sleep`, `std::process::exit`) a
 `wasm32-wasip1`. The engine runs one with the [wasmi](https://github.com/wasmi-labs/wasmi)
 interpreter every time a container starts.
 
-A scenario picks an app per image with a pinned reference, `"app": "db-client@0.1.0"`, and
+A scenario picks an app per image with a pinned reference, `"app": "db-client@0.2.0"`, and
 configures it with `config` (see [scenario-format.md](scenario-format.md#images)). The version is
 the one in the app's `Cargo.toml`.
 
@@ -58,7 +58,7 @@ A service that reads a PostgreSQL URL from its environment, connects, then serve
 | `name`, `version` | shown in the start-up line |
 | `databaseUrlEnv` | variable holding the URL (default `DATABASE_URL`) |
 | `portEnv` | variable holding the listen port (default `PORT`) |
-| `database` | the one server that exists: `host`, `port`, `user`, `name`, optional `password` |
+| `database` | optional, the earlier model: the one server that exists (`host`, `port`, `user`, `name`, optional `password`). Without it the server is whatever the cluster has at the URL's address (see below) |
 
 It logs `starting` and `loading configuration`, then one second later does one of the following:
 
@@ -72,6 +72,22 @@ It logs `starting` and `loading configuration`, then one second later does one o
 
 Every failure ends with `FATAL cannot start without a database connection, exiting`. Missing parts
 never fall back to defaults, so exactly one URL works.
+
+Without `database`, the connection goes through the cluster: the URL's host is resolved from the
+pod's namespace (short name, `svc.ns`, FQDN), through the Service and its ready endpoints, to the
+program that listens on the port (a `postgres` pod). The client then tries to log in, so the
+failures are the real ones: `could not translate host name … Name or service not known`,
+`Connection refused` (no ready endpoint, or nothing listening), `timeout expired` (a port the
+Service does not expose) or the server's own `FATAL:` line. The cluster is read when the container
+starts: a database that comes up later is found by the next run, not the current one.
+
+### `postgres`
+
+A PostgreSQL server in the manner of the official image. `POSTGRES_PASSWORD` is required (without
+it the container prints the image's error and exits 1); `POSTGRES_USER` defaults to `postgres` and
+`POSTGRES_DB` to the user. It logs `ready to accept connections`, listens on `port` (config,
+default 5432) and lets a client in only when role, database and password all match, answering
+`FATAL:  role/database "x" does not exist` or `password authentication failed` otherwise.
 
 ### `nginx`
 

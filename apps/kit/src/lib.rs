@@ -132,3 +132,80 @@ pub fn serve(port: u16, handler: impl Fn(&Request) -> Response) -> ! {
 pub fn answering_request() -> bool {
     std::env::args().nth(2).as_deref() == Some("request")
 }
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "detective")]
+extern "C" {
+    #[link_name = "request"]
+    fn host_request(
+        host: *const u8,
+        host_len: i32,
+        port: i32,
+        method: *const u8,
+        method_len: i32,
+        path: *const u8,
+        path_len: i32,
+        out: *mut u8,
+        out_cap: i32,
+        out_len: *mut u32,
+    ) -> i32;
+}
+
+/// Why a connection to another service was not made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetError {
+    /// The name does not resolve.
+    NxDomain,
+    /// The connection was refused.
+    Refused,
+    /// Nobody answered.
+    Timeout,
+}
+
+/// What a server answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub status: u16,
+    pub body: String,
+}
+
+/// Send one request to `host:port`. The engine finds where it goes (DNS, Services, ready
+/// endpoints, the port the target program listens on) and asks the program there; nothing is
+/// sent over a network.
+pub fn ask(host: &str, port: u16, method: &str, path: &str) -> Result<Reply, NetError> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut out = vec![0u8; 4096];
+        let mut len = 0u32;
+        // SAFETY: every pointer is valid for the length passed with it; the host writes at most
+        // `out_cap` bytes and the length of what it wrote.
+        let code = unsafe {
+            host_request(
+                host.as_ptr(),
+                host.len() as i32,
+                i32::from(port),
+                method.as_ptr(),
+                method.len() as i32,
+                path.as_ptr(),
+                path.len() as i32,
+                out.as_mut_ptr(),
+                out.len() as i32,
+                &mut len,
+            )
+        };
+        match code {
+            -1 => Err(NetError::NxDomain),
+            -3 => Err(NetError::Timeout),
+            code if code < 0 => Err(NetError::Refused),
+            status => Ok(Reply {
+                status: status as u16,
+                body: String::from_utf8_lossy(&out[..len as usize]).into_owned(),
+            }),
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (host, port, method, path);
+        Err(NetError::Refused)
+    }
+}

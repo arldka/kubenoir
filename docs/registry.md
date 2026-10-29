@@ -13,7 +13,7 @@ and by any **remote** backend. One client (`frontend/src/lib/registry.ts`) talks
 {appRegistry}/apps/{name}/{version}.wasm     the app (wasm32-wasip1)
 ```
 
-- **References.** Scenarios reference apps as `name@version` (`"app": "db-client@0.1.0"`).
+- **References.** Scenarios reference apps as `name@version` (`"app": "db-client@0.2.0"`).
 - **Immutable versions.** A published version must never change, because recorded sessions are
   replayed to verify scores and need the exact same apps. Publish a new version instead.
 - **Safe path segments.** Ids, names and versions use only `A-Z a-z 0-9 . _ -`.

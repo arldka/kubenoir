@@ -37,7 +37,7 @@ pub const MAX_LINES: usize = 3_000;
 pub const MAX_WRITES: usize = 3_000;
 
 /// The state of one container run.
-pub struct Process {
+pub struct Process<'a> {
     args: Vec<String>,
     /// `NAME=value` entries.
     env: Vec<String>,
@@ -50,6 +50,9 @@ pub struct Process {
     /// Complete lines with the second (since start) they were written.
     pub lines: Vec<(i64, String)>,
     rng: u64,
+    /// Where the app's connections go, and what they got.
+    net: super::Net<'a>,
+    pub calls: Vec<super::NetCall>,
     /// Ports the app declared it listens on, with the second it did.
     pub listens: Vec<(i64, u16)>,
     /// The container's volumes.
@@ -68,7 +71,7 @@ impl fmt::Display for RunsForever {
 
 impl HostError for RunsForever {}
 
-impl Process {
+impl<'a> Process<'a> {
     pub fn new(
         args: Vec<String>,
         env: Vec<String>,
@@ -76,6 +79,7 @@ impl Process {
         seed: u64,
         mounts: &[Mount],
         timeline: &Timeline,
+        net: super::Net<'a>,
     ) -> Self {
         Process {
             fs: Fs::new(mounts, timeline, started_at_secs),
@@ -86,9 +90,30 @@ impl Process {
             pending: [Vec::new(), Vec::new()],
             lines: Vec::new(),
             listens: Vec::new(),
+            net,
+            calls: Vec::new(),
             // xorshift needs a non-zero state.
             rng: seed | 1,
         }
+    }
+
+    /// One connection attempt, answered live or from the recording of an earlier run.
+    fn ask(&mut self, host: &str, port: i64, method: &str, path: &str) -> super::NetReply {
+        let reply = match &self.net {
+            super::Net::None => super::NetReply::refused(),
+            super::Net::Live(oracle) => oracle(host, port, method, path),
+            super::Net::Replay(calls) => calls
+                .get(self.calls.len())
+                .map_or_else(super::NetReply::refused, |c| c.reply.clone()),
+        };
+        self.calls.push(super::NetCall {
+            host: host.to_string(),
+            port,
+            method: method.to_string(),
+            path: path.to_string(),
+            reply: reply.clone(),
+        });
+        reply
     }
 
     /// The wall-clock second now, which stamps the files this run changes.
@@ -135,23 +160,23 @@ impl Process {
     }
 }
 
-type Ctx<'a> = Caller<'a, Process>;
+type Ctx<'a, 'p> = Caller<'a, Process<'p>>;
 
-fn memory(caller: &Ctx<'_>) -> Option<Memory> {
+fn memory(caller: &Ctx<'_, '_>) -> Option<Memory> {
     caller.get_export("memory").and_then(Extern::into_memory)
 }
 
-fn read(caller: &Ctx<'_>, ptr: i32, len: usize) -> Option<Vec<u8>> {
+fn read(caller: &Ctx<'_, '_>, ptr: i32, len: usize) -> Option<Vec<u8>> {
     let mut buf = vec![0; len];
     memory(caller)?.read(caller, ptr as u32 as usize, &mut buf).ok()?;
     Some(buf)
 }
 
-fn write(caller: &mut Ctx<'_>, ptr: i32, bytes: &[u8]) -> bool {
+fn write(caller: &mut Ctx<'_, '_>, ptr: i32, bytes: &[u8]) -> bool {
     memory(caller).is_some_and(|m| m.write(&mut *caller, ptr as u32 as usize, bytes).is_ok())
 }
 
-fn read_u32(caller: &Ctx<'_>, ptr: i32) -> Option<u32> {
+fn read_u32(caller: &Ctx<'_, '_>, ptr: i32) -> Option<u32> {
     read(caller, ptr, 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
 }
 
@@ -165,7 +190,7 @@ fn errno(ok: bool) -> i32 {
 
 /// Write `strings` as a NUL-terminated buffer at `buf` and their pointers at `ptrs`
 /// (`args_get`/`environ_get`).
-fn write_strings(caller: &mut Ctx<'_>, strings: &[String], ptrs: i32, buf: i32) -> i32 {
+fn write_strings(caller: &mut Ctx<'_, '_>, strings: &[String], ptrs: i32, buf: i32) -> i32 {
     let mut offset = 0u32;
     for (i, s) in strings.iter().enumerate() {
         let at = (buf as u32).wrapping_add(offset);
@@ -180,7 +205,7 @@ fn write_strings(caller: &mut Ctx<'_>, strings: &[String], ptrs: i32, buf: i32) 
 }
 
 /// Write the count and total buffer size of `strings` (`args_sizes_get`/`environ_sizes_get`).
-fn write_sizes(caller: &mut Ctx<'_>, strings: &[String], count_ptr: i32, size_ptr: i32) -> i32 {
+fn write_sizes(caller: &mut Ctx<'_, '_>, strings: &[String], count_ptr: i32, size_ptr: i32) -> i32 {
     let size: usize = strings.iter().map(|s| s.len() + 1).sum();
     errno(
         write(caller, count_ptr, &(strings.len() as u32).to_le_bytes())
@@ -229,37 +254,78 @@ const IMPLEMENTED: &[&str] = &[
 
 /// A linker with every import `module` needs. Calls the apps should never make are answered
 /// with `ENOSYS`, so a template linking more of libstd than it uses still instantiates.
-pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
+pub fn linker<'p>(module: &Module) -> Result<Linker<Process<'p>>, Error> {
     let mut linker = Linker::new(module.engine());
 
     // The one call that is not WASI: an app says which port it accepts connections on. Nothing
     // is bound; the oracle uses the declaration (C6).
-    linker.func_wrap("detective", "listen", |mut c: Ctx<'_>, port: i32| {
+    linker.func_wrap("detective", "listen", |mut c: Ctx<'_, '_>, port: i32| {
         if let Ok(port) = u16::try_from(port) {
             let at = c.data().elapsed_secs();
             c.data_mut().listens.push((at, port));
         }
     })?;
 
-    linker.func_wrap(MODULE, "args_sizes_get", |mut c: Ctx<'_>, count: i32, size: i32| {
+    // Reaching another service: the host asks the connectivity oracle and, if something accepts,
+    // the program listening there (C6). Returns the HTTP status, or a negative number for a
+    // connection that failed (see `NetReply`). The body is cut to fit `out_cap`.
+    linker.func_wrap(
+        "detective",
+        "request",
+        |mut c: Ctx<'_, '_>,
+         host: i32,
+         host_len: i32,
+         port: i32,
+         method: i32,
+         method_len: i32,
+         path: i32,
+         path_len: i32,
+         out: i32,
+         out_cap: i32,
+         out_len: i32|
+         -> i32 {
+            let text = |c: &Ctx<'_, '_>, ptr, len| {
+                read(c, ptr, len as usize).map(|b| String::from_utf8_lossy(&b).into_owned())
+            };
+            let (Some(host), Some(method), Some(path)) = (
+                text(&c, host, host_len),
+                text(&c, method, method_len),
+                text(&c, path, path_len),
+            ) else {
+                return EFAULT;
+            };
+            let reply = c.data_mut().ask(&host, i64::from(port), &method, &path);
+            let body = &reply.body.as_bytes()[..reply.body.len().min(out_cap.max(0) as usize)];
+            if !write(&mut c, out, body) || !write(&mut c, out_len, &(body.len() as u32).to_le_bytes()) {
+                return EFAULT;
+            }
+            reply.code
+        },
+    )?;
+
+    linker.func_wrap(MODULE, "args_sizes_get", |mut c: Ctx<'_, '_>, count: i32, size: i32| {
         let args = std::mem::take(&mut c.data_mut().args);
         let r = write_sizes(&mut c, &args, count, size);
         c.data_mut().args = args;
         r
     })?;
-    linker.func_wrap(MODULE, "args_get", |mut c: Ctx<'_>, ptrs: i32, buf: i32| {
+    linker.func_wrap(MODULE, "args_get", |mut c: Ctx<'_, '_>, ptrs: i32, buf: i32| {
         let args = std::mem::take(&mut c.data_mut().args);
         let r = write_strings(&mut c, &args, ptrs, buf);
         c.data_mut().args = args;
         r
     })?;
-    linker.func_wrap(MODULE, "environ_sizes_get", |mut c: Ctx<'_>, count: i32, size: i32| {
-        let env = std::mem::take(&mut c.data_mut().env);
-        let r = write_sizes(&mut c, &env, count, size);
-        c.data_mut().env = env;
-        r
-    })?;
-    linker.func_wrap(MODULE, "environ_get", |mut c: Ctx<'_>, ptrs: i32, buf: i32| {
+    linker.func_wrap(
+        MODULE,
+        "environ_sizes_get",
+        |mut c: Ctx<'_, '_>, count: i32, size: i32| {
+            let env = std::mem::take(&mut c.data_mut().env);
+            let r = write_sizes(&mut c, &env, count, size);
+            c.data_mut().env = env;
+            r
+        },
+    )?;
+    linker.func_wrap(MODULE, "environ_get", |mut c: Ctx<'_, '_>, ptrs: i32, buf: i32| {
         let env = std::mem::take(&mut c.data_mut().env);
         let r = write_strings(&mut c, &env, ptrs, buf);
         c.data_mut().env = env;
@@ -269,7 +335,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     linker.func_wrap(
         MODULE,
         "fd_write",
-        |mut c: Ctx<'_>, fd: i32, iovs: i32, iovs_len: i32, written_ptr: i32| {
+        |mut c: Ctx<'_, '_>, fd: i32, iovs: i32, iovs_len: i32, written_ptr: i32| {
             let stream = match fd {
                 1 => Some(0),
                 2 => Some(1),
@@ -301,14 +367,14 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
         },
     )?;
 
-    linker.func_wrap(MODULE, "proc_exit", |_: Ctx<'_>, code: i32| -> Result<(), Error> {
+    linker.func_wrap(MODULE, "proc_exit", |_: Ctx<'_, '_>, code: i32| -> Result<(), Error> {
         Err(Error::i32_exit(code))
     })?;
 
     linker.func_wrap(
         MODULE,
         "clock_time_get",
-        |mut c: Ctx<'_>, clock: i32, _precision: i64, time_ptr: i32| {
+        |mut c: Ctx<'_, '_>, clock: i32, _precision: i64, time_ptr: i32| {
             let p = c.data();
             // 0 is the realtime clock; monotonic and CPU-time clocks count from the start.
             let now = if clock == 0 {
@@ -323,7 +389,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     linker.func_wrap(
         MODULE,
         "poll_oneoff",
-        |mut c: Ctx<'_>, subs: i32, events: i32, nsubs: i32, nevents_ptr: i32| -> Result<i32, Error> {
+        |mut c: Ctx<'_, '_>, subs: i32, events: i32, nsubs: i32, nevents_ptr: i32| -> Result<i32, Error> {
             // Subscriptions are 48 bytes: userdata u64 @0, tag u8 @8, then for a clock:
             // id u32 @16, timeout u64 @24, precision u64 @32, flags u16 @40.
             let Some(raw) = read(&c, subs, 48 * nsubs.max(0) as usize) else {
@@ -370,17 +436,17 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
         },
     )?;
 
-    linker.func_wrap(MODULE, "random_get", |mut c: Ctx<'_>, buf: i32, len: i32| {
+    linker.func_wrap(MODULE, "random_get", |mut c: Ctx<'_, '_>, buf: i32, len: i32| {
         let bytes: Vec<u8> = (0..len.max(0) as usize)
             .map(|_| c.data_mut().next_random() as u8)
             .collect();
         errno(write(&mut c, buf, &bytes))
     })?;
-    linker.func_wrap(MODULE, "sched_yield", |_: Ctx<'_>| ESUCCESS)?;
+    linker.func_wrap(MODULE, "sched_yield", |_: Ctx<'_, '_>| ESUCCESS)?;
 
     // Descriptors 0-2 are character devices, 3 is the preopened root, and files and
     // directories opened under it start at 4.
-    linker.func_wrap(MODULE, "fd_fdstat_get", |mut c: Ctx<'_>, fd: i32, stat: i32| {
+    linker.func_wrap(MODULE, "fd_fdstat_get", |mut c: Ctx<'_, '_>, fd: i32, stat: i32| {
         let kind = match fd {
             0..=2 => 2, // character device
             ROOT_FD => TYPE_DIRECTORY,
@@ -398,7 +464,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
         fdstat[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
         errno(write(&mut c, stat, &fdstat))
     })?;
-    linker.func_wrap(MODULE, "fd_prestat_get", |mut c: Ctx<'_>, fd: i32, buf: i32| {
+    linker.func_wrap(MODULE, "fd_prestat_get", |mut c: Ctx<'_, '_>, fd: i32, buf: i32| {
         if fd != ROOT_FD {
             return EBADF;
         }
@@ -410,7 +476,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     linker.func_wrap(
         MODULE,
         "fd_prestat_dir_name",
-        |mut c: Ctx<'_>, fd: i32, path: i32, len: i32| {
+        |mut c: Ctx<'_, '_>, fd: i32, path: i32, len: i32| {
             if fd != ROOT_FD {
                 return EBADF;
             }
@@ -420,7 +486,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
             errno(write(&mut c, path, b"/"))
         },
     )?;
-    linker.func_wrap(MODULE, "fd_close", |mut c: Ctx<'_>, fd: i32| {
+    linker.func_wrap(MODULE, "fd_close", |mut c: Ctx<'_, '_>, fd: i32| {
         if fd <= ROOT_FD {
             return EBADF;
         }
@@ -429,7 +495,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     linker.func_wrap(
         MODULE,
         "fd_seek",
-        |mut c: Ctx<'_>, fd: i32, offset: i64, whence: i32, new_ptr: i32| {
+        |mut c: Ctx<'_, '_>, fd: i32, offset: i64, whence: i32, new_ptr: i32| {
             if fd <= ROOT_FD {
                 return ESPIPE;
             }
@@ -440,7 +506,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
             }
         },
     )?;
-    linker.func_wrap(MODULE, "fd_tell", |mut c: Ctx<'_>, fd: i32, ptr: i32| {
+    linker.func_wrap(MODULE, "fd_tell", |mut c: Ctx<'_, '_>, fd: i32, ptr: i32| {
         if fd <= ROOT_FD {
             return ESPIPE;
         }
@@ -452,7 +518,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     linker.func_wrap(
         MODULE,
         "fd_read",
-        |mut c: Ctx<'_>, fd: i32, iovs: i32, iovs_len: i32, read_ptr: i32| {
+        |mut c: Ctx<'_, '_>, fd: i32, iovs: i32, iovs_len: i32, read_ptr: i32| {
             // Standard input is empty and never ends; only files can be read.
             if fd <= ROOT_FD {
                 return ENOSYS;
@@ -482,7 +548,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     linker.func_wrap(
         MODULE,
         "path_open",
-        |mut c: Ctx<'_>,
+        |mut c: Ctx<'_, '_>,
          dirfd: i32,
          _dirflags: i32,
          path_ptr: i32,
@@ -508,7 +574,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
             }
         },
     )?;
-    linker.func_wrap(MODULE, "fd_filestat_get", |mut c: Ctx<'_>, fd: i32, buf: i32| {
+    linker.func_wrap(MODULE, "fd_filestat_get", |mut c: Ctx<'_, '_>, fd: i32, buf: i32| {
         let (kind, size) = match fd {
             0..=2 => (2, 0),
             ROOT_FD => (TYPE_DIRECTORY, 0),
@@ -525,7 +591,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     linker.func_wrap(
         MODULE,
         "path_filestat_get",
-        |mut c: Ctx<'_>, dirfd: i32, _flags: i32, path_ptr: i32, path_len: i32, buf: i32| {
+        |mut c: Ctx<'_, '_>, dirfd: i32, _flags: i32, path_ptr: i32, path_len: i32, buf: i32| {
             if dirfd != ROOT_FD {
                 return EBADF;
             }
@@ -542,7 +608,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     linker.func_wrap(
         MODULE,
         "fd_readdir",
-        |mut c: Ctx<'_>, fd: i32, buf: i32, buf_len: i32, cookie: i64, used_ptr: i32| {
+        |mut c: Ctx<'_, '_>, fd: i32, buf: i32, buf_len: i32, cookie: i64, used_ptr: i32| {
             let entries = match c.data().fs.readdir(fd as u32, cookie as u64) {
                 Ok(entries) => entries,
                 Err(e) => return e,
@@ -565,7 +631,7 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
         linker.func_wrap(
             MODULE,
             name,
-            move |mut c: Ctx<'_>, dirfd: i32, path_ptr: i32, path_len: i32| {
+            move |mut c: Ctx<'_, '_>, dirfd: i32, path_ptr: i32, path_len: i32| {
                 if dirfd != ROOT_FD {
                     return EBADF;
                 }
@@ -584,8 +650,8 @@ pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
             },
         )?;
     }
-    linker.func_wrap(MODULE, "fd_sync", |_: Ctx<'_>, _fd: i32| ESUCCESS)?;
-    linker.func_wrap(MODULE, "fd_datasync", |_: Ctx<'_>, _fd: i32| ESUCCESS)?;
+    linker.func_wrap(MODULE, "fd_sync", |_: Ctx<'_, '_>, _fd: i32| ESUCCESS)?;
+    linker.func_wrap(MODULE, "fd_datasync", |_: Ctx<'_, '_>, _fd: i32| ESUCCESS)?;
 
     for import in module.imports() {
         if import.module() != MODULE || IMPLEMENTED.contains(&import.name()) {

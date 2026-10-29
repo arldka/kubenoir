@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn references_need_a_name_and_a_version() {
-        assert!(is_reference("db-client@0.1.0"));
+        assert!(is_reference("db-client@0.2.0"));
         for bad in ["db-client", "@1", "db-client@", "a@b@c", ""] {
             assert!(!is_reference(bad), "{bad}");
         }

@@ -228,7 +228,7 @@ test('the case and its apps are fetched from the local registry', async ({ page 
 			'/registry/scenarios/index.json',
 			'/registry/scenarios/crashloop-env-typo/scenario.json',
 			'/registry/scenarios/crashloop-env-typo/manifests/workloads.yaml',
-			'/registry/apps/db-client/0.1.0.wasm',
+			'/registry/apps/db-client/0.2.0.wasm',
 			'/registry/apps/nginx/0.1.0.wasm'
 		])
 	);

@@ -26,6 +26,7 @@ use crate::apps::{self, Launch, Mount, Program, VolEvent};
 use crate::clock;
 use crate::events::{self, EventType, Involved, Source};
 use crate::names;
+use crate::net::{self, Outcome};
 use crate::store::{ClusterStore, StoreError};
 
 /// Runtime-row name for pod-level state (as opposed to a container's).
@@ -465,6 +466,8 @@ fn apply(
                 vols.events.append(&mut rt.program.writes);
             }
             let timeline = vols.timeline(peers);
+            // What the app can reach is what the cluster is at this moment (V32).
+            let oracle = oracle(ctx.env, &ctx.namespace);
             rt.program = apps::run(
                 &ctx.env.config.apps,
                 ctx.env.config.images.get(&image),
@@ -475,6 +478,7 @@ fn apply(
                     seed: seed_of(ctx, &container.name, rt.instance),
                     mounts: &mounts,
                     timeline: &timeline,
+                    net: apps::Net::Live(&oracle),
                 },
             );
             rt.env = resolved.env.clone();
@@ -604,6 +608,8 @@ fn settle(
                     seed: seed_of(ctx, &container.name, rt.instance),
                     mounts: &rt.mounts,
                     timeline: &timeline,
+                    // The run keeps what it was told when it started; only the files change.
+                    net: apps::Net::Replay(&rt.program.calls),
                 },
             );
             if program != rt.program {
@@ -835,6 +841,29 @@ pub fn is_running(store: &ClusterStore, namespace: &str, pod: &str, container: &
         .is_some_and(|rt| rt.phase == Phase::Running))
 }
 
+/// The connectivity oracle as an app sees it: connect from a pod in `namespace` to `host:port`
+/// and, if a program accepts, get its answer to the request.
+fn oracle<'a>(env: &'a Env<'a>, namespace: &'a str) -> impl Fn(&str, i64, &str, &str) -> apps::NetReply + 'a {
+    move |host, port, method, path| {
+        let reply = |code: i32, body: String| apps::NetReply { code, body };
+        let listening = |pod: &Value, port: i64| listens(env.store, pod, port);
+        match net::connect(env.store, namespace, host, port, &listening) {
+            Ok(Outcome::NxDomain) => reply(apps::NetReply::NX_DOMAIN, String::new()),
+            Ok(Outcome::Timeout | Outcome::External { .. }) => reply(apps::NetReply::TIMEOUT, String::new()),
+            Ok(Outcome::Connected { namespace, pod, port }) => {
+                let answered = env
+                    .store
+                    .get("Pod", &namespace, &pod)
+                    .ok()
+                    .flatten()
+                    .and_then(|pod| answer(env, &pod, port, method, path).ok().flatten());
+                answered.map_or_else(apps::NetReply::refused, |r| reply(i32::from(r.status), r.body))
+            }
+            Ok(Outcome::Refused) | Err(_) => apps::NetReply::refused(),
+        }
+    }
+}
+
 /// What the container listening on `port` answers to a request, asked of the same program that
 /// is running there (with the environment it started with).
 pub fn answer(
@@ -866,6 +895,7 @@ pub fn answer(
             seed: names::fnv1a(format!("{uid}/{container}/{}", rt.instance).as_bytes()),
             mounts: &rt.mounts,
             timeline: &apps::Timeline::default(),
+            net: apps::Net::None,
         },
         method,
         path,
@@ -884,7 +914,7 @@ mod tests {
         format!(
             r#"{{
             "id": "t",
-            "images": {{"app:1": {{"app": "db-client@0.1.0", "config": {{"name": "app", "version": "1",
+            "images": {{"app:1": {{"app": "db-client@0.2.0", "config": {{"name": "app", "version": "1",
                 "database": {{"host": "db", "port": 5432, "user": "u", "name": "pay"}}}}}}}},
             "cluster": {{
                 "now": "2026-10-27T18:30:00Z",

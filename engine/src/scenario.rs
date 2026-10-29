@@ -274,7 +274,7 @@ pub fn load(json: &str, files: &Files, apps: AppSet) -> Result<Cluster, Scenario
         let Some(app) = spec.app.as_deref() else { continue };
         if !apps::is_reference(app) {
             return Err(ScenarioError::Image(format!(
-                "{image} runs app {app:?}; app references must be name@version, e.g. db-client@0.1.0"
+                "{image} runs app {app:?}; app references must be name@version, e.g. db-client@0.2.0"
             )));
         }
         if !apps.contains(app) {
@@ -622,22 +622,22 @@ status: {phase: Running}
 
     #[test]
     fn every_referenced_app_must_be_supplied() {
-        let err = load(&with_app("db-client@0.1.0"), &Files::new(), AppSet::default())
+        let err = load(&with_app("db-client@0.2.0"), &Files::new(), AppSet::default())
             .err()
             .unwrap()
             .to_string();
         assert!(
-            err.contains("img:1 runs app db-client@0.1.0, which was not supplied"),
+            err.contains("img:1 runs app db-client@0.2.0, which was not supplied"),
             "{err}"
         );
-        assert!(load(&with_app("db-client@0.1.0"), &Files::new(), AppSet::bundled()).is_ok());
+        assert!(load(&with_app("db-client@0.2.0"), &Files::new(), AppSet::bundled()).is_ok());
     }
 
     #[test]
     fn required_apps_lists_each_reference_once() {
         assert_eq!(
-            required_apps(&with_app("db-client@0.1.0")).unwrap(),
-            ["db-client@0.1.0"]
+            required_apps(&with_app("db-client@0.2.0")).unwrap(),
+            ["db-client@0.2.0"]
         );
         assert!(required_apps("{}").unwrap().is_empty());
         assert!(required_apps("nope").is_err());

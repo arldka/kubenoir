@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "db-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kit",
  "serde",
@@ -43,6 +43,14 @@ name = "nginx"
 version = "0.1.0"
 dependencies = [
  "kit",
+]
+
+[[package]]
+name = "postgres"
+version = "0.1.0"
+dependencies = [
+ "kit",
+ "serde",
 ]
 
 [[package]]
