@@ -11,7 +11,7 @@
 	import Sound from '#lib/components/Sound.svelte';
 	import { armSound } from '#lib/audio/index.js';
 	import { caseStatus, engineState, recordHint, resetEngine, simTime, startClock } from '#lib/engine.js';
-	import { pickCase, Registry, sourcesFromEnv } from '#lib/registry.js';
+	import { pickCase, Registry, sourcesFromEnv, type ScenarioSource } from '#lib/registry.js';
 	import { caseNumber, parseScenarioMeta, type ScenarioMeta } from '#lib/scenario.js';
 	import Terminal from '#lib/terminal/Terminal.svelte';
 
@@ -20,7 +20,7 @@
 	const localRegistry = asset('registry' as Parameters<typeof asset>[0]);
 	const registry = new Registry(sourcesFromEnv(import.meta.env, localRegistry));
 
-	let scenarioJson = $state<string | null>(null);
+	let scenario = $state<ScenarioSource | null>(null);
 	let meta = $state<ScenarioMeta | null>(null);
 	let loadError = $state<string | null>(null);
 
@@ -40,14 +40,14 @@
 		let closed = false;
 		void (async () => {
 			try {
-				const json = await pickCase(registry, new URLSearchParams(window.location.search), {
+				const source = await pickCase(registry, new URLSearchParams(window.location.search), {
 					dev: import.meta.env.DEV
 				});
-				const parsed = parseScenarioMeta(json);
+				const parsed = parseScenarioMeta(source.json);
 				if (closed) return;
-				scenarioJson = json;
+				scenario = source;
 				meta = parsed;
-				await resetEngine(json, registry);
+				await resetEngine(source, registry);
 				if (!closed) stopClock = startClock();
 			} catch (e) {
 				loadError = e instanceof Error ? e.message : String(e);
@@ -78,7 +78,7 @@
 		startedAt = null;
 		reportShown = false;
 		reportOpen = false;
-		if (scenarioJson) await resetEngine(scenarioJson, registry);
+		if (scenario) await resetEngine(scenario, registry);
 	}
 </script>
 

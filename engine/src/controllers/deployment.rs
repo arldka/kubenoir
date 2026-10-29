@@ -522,7 +522,7 @@ mod tests {
           "template": {"metadata": {"labels": {"app": "web"}}, "spec": {"containers": [{"name": "web", "image": "nginx:1.27"}]}}}}"#;
 
     fn engine(started_at: &str) -> Engine {
-        Engine::from_scenario(&scenario(started_at, WEB), crate::apps::AppSet::bundled()).unwrap()
+        crate::scenario::inline::engine(&scenario(started_at, WEB))
     }
 
     /// Edit a Deployment the way `kubectl` would: change it and bump `generation`.
@@ -854,13 +854,15 @@ mod tests {
 
     #[test]
     fn invalid_timelines_are_rejected() {
-        let after = Engine::from_scenario(&scenario("2026-10-28T00:00:00Z", WEB), crate::apps::AppSet::bundled())
-            .err()
-            .unwrap();
+        let after =
+            crate::scenario::inline::load(&scenario("2026-10-28T00:00:00Z", WEB), crate::apps::AppSet::bundled())
+                .err()
+                .unwrap();
         assert!(after.to_string().contains("startedAt is after"), "{after}");
-        let too_old = Engine::from_scenario(&scenario("2026-01-01T00:00:00Z", WEB), crate::apps::AppSet::bundled())
-            .err()
-            .unwrap();
+        let too_old =
+            crate::scenario::inline::load(&scenario("2026-01-01T00:00:00Z", WEB), crate::apps::AppSet::bundled())
+                .err()
+                .unwrap();
         assert!(too_old.to_string().contains("at most 14"), "{too_old}");
     }
 }

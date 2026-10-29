@@ -4,7 +4,8 @@
 //   apps/index.json                 {"db-client": ["0.1.0"], ...}
 //   apps/{name}/{version}.wasm      from apps/target/wasm32-wasip1/release (run `make apps` first)
 //   scenarios/index.json            [{"id", "title", "objective"}], sorted by id
-//   scenarios/{id}.json             from scenarios/{id}/scenario.json
+//   scenarios/{id}/scenario.json    from scenarios/{id}/scenario.json
+//   scenarios/{id}/{manifest}       every file its cluster.manifests lists, at the same path
 //
 // Scenarios without a `briefing` are engine test fixtures and are skipped. Anything else that is
 // wrong (bad meta, an id that does not match its folder, an app not in the registry) fails.
@@ -12,7 +13,7 @@
 // Usage: bun scripts/build-registry.ts
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { parseScenarioMeta } from '../frontend/src/lib/scenario.ts';
 
@@ -58,7 +59,11 @@ for (const dir of readdirSync(join(root, 'scenarios')).sort()) {
 	const file = join(root, 'scenarios', dir, 'scenario.json');
 	if (!existsSync(file)) continue;
 	const json = readFileSync(file, 'utf8');
-	const data = JSON.parse(json) as { briefing?: unknown; images?: Record<string, { app?: string }> };
+	const data = JSON.parse(json) as {
+		briefing?: unknown;
+		images?: Record<string, { app?: string }>;
+		cluster?: { manifests?: unknown };
+	};
 	if (data.briefing === undefined) {
 		console.log(`build-registry: skipped scenarios/${dir} (no briefing: a test fixture, not a case)`);
 		continue;
@@ -77,7 +82,22 @@ for (const dir of readdirSync(join(root, 'scenarios')).sort()) {
 			fail(`scenarios/${dir}: image ${image} runs ${spec.app}, which is not in the registry`);
 		}
 	}
-	cpSync(file, join(out, 'scenarios', `${meta.id}.json`));
+	const manifests = data.cluster?.manifests ?? [];
+	if (!Array.isArray(manifests)) fail(`scenarios/${dir}: cluster.manifests must be a list of paths`);
+	const published = join(out, 'scenarios', meta.id);
+	mkdirSync(published, { recursive: true });
+	cpSync(file, join(published, 'scenario.json'));
+	for (const ref of manifests) {
+		// The engine's scenario-check has already vetted these; refuse anything unsafe regardless.
+		const path = typeof ref === 'string' ? ref.replace(/^(\.\/)+/, '') : '';
+		if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(path) || path.split('/').some((s) => s === '.' || s === '..')) {
+			fail(`scenarios/${dir}: manifest reference ${JSON.stringify(ref)} is not a safe relative path`);
+		}
+		const source = join(root, 'scenarios', dir, path);
+		if (!existsSync(source)) fail(`scenarios/${dir}: ${path} (listed in cluster.manifests) does not exist`);
+		mkdirSync(dirname(join(published, path)), { recursive: true });
+		cpSync(source, join(published, path));
+	}
 	index.push({ id: meta.id, title: meta.title, objective: meta.objective });
 }
 writeFileSync(join(out, 'scenarios/index.json'), JSON.stringify(index, null, '\t') + '\n');

@@ -1,9 +1,11 @@
 //! End-to-end: `kubectl apply|create|delete -f` against files written into the engine.
 
-use engine::{AppSet, Engine};
+use engine::{AppSet, Engine, Files};
 use serde_json::Value;
 
-const SCENARIO: &str = r#"{"id":"apply","cluster":{"now":"2026-10-27T18:30:00Z","nodes":["worker-1"]}}"#;
+const SCENARIO: &str =
+    r#"{"schemaVersion":2,"id":"apply","cluster":{"now":"2026-10-27T18:30:00Z","manifests":["nodes.yaml"]}}"#;
+const NODES: &str = "apiVersion: v1\nkind: Node\nmetadata:\n  name: worker-1\n";
 
 const WEB: &str = "\
 apiVersion: apps/v1
@@ -28,7 +30,8 @@ spec:
 ";
 
 fn engine() -> Engine {
-    Engine::from_scenario(SCENARIO, AppSet::bundled()).expect("scenario loads")
+    let files = Files::from([("nodes.yaml".to_string(), NODES.to_string())]);
+    Engine::from_scenario(SCENARIO, &files, AppSet::bundled()).expect("scenario loads")
 }
 
 fn json(e: &mut Engine, what: &str) -> Value {

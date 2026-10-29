@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn crash_loop_timeline_matches_kubelet_backoff() {
-        let mut e = Engine::from_scenario(&scenario(TYPO), crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::engine(&scenario(TYPO));
         assert_eq!(row(&mut e)[..4], ["p", "0/1", "ContainerCreating", "0"]);
 
         // Started at +2 s, crashes at +3 s; then restarts at +13, +34, +75, +156, +317, +618.
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn backoff_is_capped_at_five_minutes() {
-        let mut e = Engine::from_scenario(&scenario(TYPO), crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::engine(&scenario(TYPO));
         // Restart #6 at +618, crash at +619, then the delay is capped at 300 s -> restart #7 at +919.
         e.advance(918);
         assert_eq!(row(&mut e)[3], "6");
@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn logs_are_written_per_instance_with_due_timestamps() {
-        let mut e = Engine::from_scenario(&scenario(TYPO), crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::engine(&scenario(TYPO));
         e.advance(14);
         let store = e.store();
         let first = store.read_logs("default", "p", "app", 0).unwrap();
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn correct_env_runs_healthy_and_logs_what_the_app_prints() {
-        let mut e = Engine::from_scenario(&scenario(GOOD), crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::engine(&scenario(GOOD));
         e.advance(600);
         assert_eq!(row(&mut e)[1..4], ["1/1", "Running", "0"]);
         let lines = e.store().read_logs("default", "p", "app", 0).unwrap();
@@ -705,7 +705,7 @@ mod tests {
 
     #[test]
     fn status_reflects_last_state_and_backoff_message() {
-        let mut e = Engine::from_scenario(&scenario(TYPO), crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::engine(&scenario(TYPO));
         e.advance(4);
         let json: serde_json::Value = serde_json::from_str(&e.eval("kubectl get pod p -o json")).unwrap();
         let cs = &json["status"]["containerStatuses"][0];
@@ -735,7 +735,7 @@ mod tests {
             {"apiVersion":"v1","kind":"Pod","metadata":{"name":"p2"},"spec":{"containers":[{"name":"c","image":"x"}]}},
             {"apiVersion":"v1","kind":"Pod","metadata":{"name":"p3"},"spec":{"containers":[{"name":"c","image":"x"}]}}
         ]}}"#;
-        let e = Engine::from_scenario(json, crate::apps::AppSet::bundled()).unwrap();
+        let e = crate::scenario::inline::engine(json);
         let nodes: Vec<String> = e
             .store()
             .list("Pod", "default")
@@ -759,7 +759,7 @@ mod tests {
     fn no_nodes_means_unschedulable() {
         let json = r#"{"id":"t","cluster":{"now":"2026-10-27T18:30:00Z","pods":[
             {"apiVersion":"v1","kind":"Pod","metadata":{"name":"p"},"spec":{"containers":[{"name":"c","image":"x"}]}}]}}"#;
-        let mut e = Engine::from_scenario(json, crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::engine(json);
         e.advance(60);
         let out = e.eval("kubectl get pod p");
         assert!(out.lines().nth(1).unwrap().contains("Pending"), "{out}");
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn events_follow_the_container_lifecycle() {
-        let mut e = Engine::from_scenario(&scenario(TYPO), crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::engine(&scenario(TYPO));
         e.advance(14);
         let events = e.store().list("Event", "default").unwrap();
         let count = |reason: &str| {
@@ -786,8 +786,7 @@ mod tests {
 
     #[test]
     fn static_authored_pods_are_left_alone() {
-        let json = include_str!("../../../scenarios/sample-crashloop/scenario.json");
-        let mut e = Engine::from_scenario(json, crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::repo("sample-crashloop");
         let before = e.eval("kubectl get pods");
         e.advance(3600);
         assert_eq!(
@@ -811,9 +810,9 @@ mod tests {
 
     #[test]
     fn advance_in_one_step_equals_many_steps() {
-        let mut big = Engine::from_scenario(&scenario(TYPO), crate::apps::AppSet::bundled()).unwrap();
+        let mut big = crate::scenario::inline::engine(&scenario(TYPO));
         big.advance(700);
-        let mut small = Engine::from_scenario(&scenario(TYPO), crate::apps::AppSet::bundled()).unwrap();
+        let mut small = crate::scenario::inline::engine(&scenario(TYPO));
         for _ in 0..700 {
             small.advance(1);
         }
@@ -829,7 +828,7 @@ mod tests {
 
     #[test]
     fn deleted_pod_disappears_after_grace_and_takes_its_state_along() {
-        let mut e = Engine::from_scenario(&scenario(TYPO), crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::engine(&scenario(TYPO));
         e.advance(5);
         let mut pod: serde_json::Value = e.store().get("Pod", "default", "p").unwrap().unwrap();
         pod["metadata"]["deletionTimestamp"] = serde_json::json!(crate::clock::format(e.now_secs() + 2));

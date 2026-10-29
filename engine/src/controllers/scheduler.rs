@@ -11,8 +11,19 @@ use crate::clock;
 use crate::events::{self, EventType, Involved, Source};
 use crate::store::StoreError;
 
+/// Names of the nodes pods can go to, in name order (which also numbers their IP ranges).
+fn node_names(env: &Env<'_>) -> Result<Vec<String>, StoreError> {
+    Ok(env
+        .store
+        .list_all("Node")?
+        .iter()
+        .filter_map(|n| n["metadata"]["name"].as_str().map(String::from))
+        .collect())
+}
+
 pub fn pass(env: &Env<'_>) -> Result<bool, StoreError> {
     let all = pods(env.store)?;
+    let nodes = node_names(env)?;
 
     // How many live pods each node already runs, for least-loaded placement.
     let mut load: BTreeMap<String, usize> = BTreeMap::new();
@@ -29,26 +40,25 @@ pub fn pass(env: &Env<'_>) -> Result<bool, StoreError> {
         if pod.status.as_ref().and_then(|s| s.phase.as_ref()).is_some() {
             continue;
         }
-        schedule(env, &mut pod, &mut load)?;
+        schedule(env, &mut pod, &nodes, &mut load)?;
         changed = true;
     }
     Ok(changed)
 }
 
-fn schedule(env: &Env<'_>, pod: &mut Pod, load: &mut BTreeMap<String, usize>) -> Result<(), StoreError> {
+fn schedule(
+    env: &Env<'_>,
+    pod: &mut Pod,
+    nodes: &[String],
+    load: &mut BTreeMap<String, usize>,
+) -> Result<(), StoreError> {
     let (ns, name, uid) = pod_identity(pod);
     let now_time = clock::to_time(env.now);
     pod.metadata.namespace.get_or_insert_with(|| ns.clone());
     pod.metadata.creation_timestamp.get_or_insert_with(|| now_time.clone());
 
     let preset = pod.spec.as_ref().and_then(|s| s.node_name.clone());
-    let node = preset.or_else(|| {
-        env.config
-            .nodes
-            .iter()
-            .min_by_key(|n| load.get(*n).copied().unwrap_or(0))
-            .cloned()
-    });
+    let node = preset.or_else(|| nodes.iter().min_by_key(|n| load.get(*n).copied().unwrap_or(0)).cloned());
     let involved = Involved {
         kind: "Pod",
         api_version: "v1",
@@ -88,7 +98,7 @@ fn schedule(env: &Env<'_>, pod: &mut Pod, load: &mut BTreeMap<String, usize>) ->
     };
 
     *load.entry(node.clone()).or_default() += 1;
-    let node_index = env.config.nodes.iter().position(|n| *n == node).unwrap_or(0);
+    let node_index = nodes.iter().position(|n| *n == node).unwrap_or(0);
     let pod_ip = format!("10.244.{node_index}.{}", 2 + env.store.next_id() % 250);
     if let Some(spec) = pod.spec.as_mut() {
         spec.node_name = Some(node.clone());

@@ -4,7 +4,7 @@ import { caseNumber, parseScenarioMeta } from './scenario';
 
 import realScenario from '../../../scenarios/crashloop-env-typo/scenario.json?raw';
 
-const valid = { schemaVersion: 1, id: 'x', title: 'T', briefing: 'B', objective: 'O' };
+const valid = { schemaVersion: 2, id: 'x', title: 'T', briefing: 'B', objective: 'O' };
 
 describe('parseScenarioMeta', () => {
 	it('reads the shipped scenario', () => {
@@ -24,7 +24,7 @@ describe('parseScenarioMeta', () => {
 		const parse = (o: unknown) => () => parseScenarioMeta(JSON.stringify(o));
 		expect(() => parseScenarioMeta('{nope')).toThrow(/not valid JSON/);
 		expect(() => parseScenarioMeta('[]')).toThrow(/needs|schemaVersion/);
-		expect(parse({ ...valid, schemaVersion: 2 })).toThrow(/schemaVersion 2/);
+		expect(parse({ ...valid, schemaVersion: 1 })).toThrow(/schemaVersion 1/);
 		expect(parse({ ...valid, schemaVersion: undefined })).toThrow(/schemaVersion/);
 		expect(parse({ ...valid, title: '' })).toThrow(/"title"/);
 		expect(parse({ ...valid, briefing: 5 })).toThrow(/"briefing"/);

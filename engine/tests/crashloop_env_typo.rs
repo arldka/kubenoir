@@ -1,13 +1,19 @@
 //! Full playthrough of the `crashloop-env-typo` scenario through the public engine API: the
 //! investigation (get, logs, describe, events) and the fix (set env, then watch the rollout).
 
-use engine::{AppSet, Engine};
+mod common;
 
-const SCENARIO: &str = include_str!("../../scenarios/crashloop-env-typo/scenario.json");
+use engine::{AppSet, Engine, Files};
+
+const ID: &str = "crashloop-env-typo";
 const DATABASE_URL: &str = "postgres://payments@postgres.default.svc.cluster.local:5432/payments";
 
 fn engine() -> Engine {
-    Engine::from_scenario(SCENARIO, AppSet::bundled()).expect("scenario loads")
+    common::engine(ID)
+}
+
+fn scenario() -> (String, Files) {
+    common::scenario(ID)
 }
 
 /// Name of the pod whose name starts with `prefix` and is not terminating.
@@ -543,16 +549,18 @@ fn a_recorded_session_replays_to_the_same_verdict() {
     live.advance(40);
 
     let parsed: Vec<engine::Step> = serde_json::from_value(steps).unwrap();
-    let replayed = Engine::replay(SCENARIO, &parsed, AppSet::bundled()).unwrap();
+    let (json, files) = scenario();
+    let replayed = Engine::replay(&json, &files, &parsed, AppSet::bundled()).unwrap();
     assert_eq!(serde_json::to_value(replayed).unwrap(), status(&live));
     assert_eq!(status(&live)["solved"], true);
 }
 
 #[test]
 fn broken_rules_in_a_scenario_are_rejected_with_a_helpful_message() {
-    let mut scenario: Value = serde_json::from_str(SCENARIO).unwrap();
+    let (json, files) = scenario();
+    let mut scenario: Value = serde_json::from_str(&json).unwrap();
     scenario["success"]["assert"][0]["select"]["kind"] = json!("Pods");
-    let err = Engine::from_scenario(&scenario.to_string(), AppSet::bundled())
+    let err = Engine::from_scenario(&scenario.to_string(), &files, AppSet::bundled())
         .err()
         .unwrap()
         .to_string();

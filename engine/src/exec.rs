@@ -66,14 +66,14 @@ fn get(args: &GetArgs, store: &ClusterStore, now: &Time) -> Result<String, Store
 mod tests {
     use super::*;
     use crate::parser::parse;
-    use crate::scenario::load;
+    use crate::scenario::inline::load;
 
     const SCENARIO: &str = r#"{
         "cluster": {
             "now": "2026-10-27T18:30:00Z",
             "pods": [
-                {"apiVersion":"v1","kind":"Pod","metadata":{"name":"b","creationTimestamp":"2026-10-24T18:30:00Z"},"spec":{"containers":[{"name":"c"}]},"status":{"phase":"Running"}},
-                {"apiVersion":"v1","kind":"Pod","metadata":{"name":"a","creationTimestamp":"2026-10-27T18:00:00Z"},"spec":{"containers":[{"name":"c"}]},"status":{"phase":"Running"}}
+                {"apiVersion":"v1","kind":"Pod","metadata":{"name":"b","creationTimestamp":"2026-10-24T18:30:00Z"},"spec":{"containers":[{"name":"c","image":"nginx:1.27"}]},"status":{"phase":"Running"}},
+                {"apiVersion":"v1","kind":"Pod","metadata":{"name":"a","creationTimestamp":"2026-10-27T18:00:00Z"},"spec":{"containers":[{"name":"c","image":"nginx:1.27"}]},"status":{"phase":"Running"}}
             ]
         }
     }"#;

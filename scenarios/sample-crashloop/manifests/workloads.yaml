@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-7d9f8b6c5-x2k4p
+  namespace: default
+  labels:
+    app: web
+    pod-template-hash: 7d9f8b6c5
+  creationTimestamp: '2026-10-24T18:30:00Z'
+spec:
+  nodeName: worker-1
+  containers:
+  - name: web
+    image: nginx:1.27
+status:
+  phase: Running
+  hostIP: 192.168.49.2
+  podIP: 10.244.1.12
+  containerStatuses:
+  - name: web
+    ready: true
+    restartCount: 0
+    image: nginx:1.27
+    imageID: docker.io/library/nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001
+    state:
+      running:
+        startedAt: '2026-10-24T18:30:05Z'
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-7d9f8b6c5-m8q7z
+  namespace: default
+  labels:
+    app: web
+    pod-template-hash: 7d9f8b6c5
+  creationTimestamp: '2026-10-24T18:30:00Z'
+spec:
+  nodeName: worker-2
+  containers:
+  - name: web
+    image: nginx:1.27
+status:
+  phase: Running
+  hostIP: 192.168.49.3
+  podIP: 10.244.2.7
+  containerStatuses:
+  - name: web
+    ready: true
+    restartCount: 0
+    image: nginx:1.27
+    imageID: docker.io/library/nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001
+    state:
+      running:
+        startedAt: '2026-10-24T18:30:06Z'
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: payments-api-5c7d4f9b8-9hjv2
+  namespace: default
+  labels:
+    app: payments-api
+    pod-template-hash: 5c7d4f9b8
+  creationTimestamp: '2026-10-27T17:43:00Z'
+spec:
+  nodeName: worker-2
+  containers:
+  - name: payments-api
+    image: registry.example.com/payments-api:2.4.1
+status:
+  phase: Running
+  hostIP: 192.168.49.3
+  podIP: 10.244.2.9
+  containerStatuses:
+  - name: payments-api
+    ready: false
+    restartCount: 14
+    image: registry.example.com/payments-api:2.4.1
+    imageID: registry.example.com/payments-api@sha256:0000000000000000000000000000000000000000000000000000000000000002
+    state:
+      waiting:
+        reason: CrashLoopBackOff
+        message: back-off 5m0s restarting failed container=payments-api pod=payments-api-5c7d4f9b8-9hjv2_default
+    lastState:
+      terminated:
+        exitCode: 1
+        reason: Error
+        startedAt: '2026-10-27T18:27:10Z'
+        finishedAt: '2026-10-27T18:27:11Z'

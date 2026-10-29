@@ -22,7 +22,8 @@ mod store;
 
 pub use apps::AppSet;
 pub use judge::Status;
-pub use scenario::{required_apps, ScenarioError};
+pub use manifests::Files;
+pub use scenario::{required_apps, required_files, ScenarioError};
 pub use sim::{Engine, Step};
 
 use wasm_bindgen::prelude::*;
@@ -55,6 +56,18 @@ pub fn wasm_required_apps(scenario_json: &str) -> Result<Vec<String>, JsError> {
     Ok(required_apps(scenario_json)?)
 }
 
+/// The manifest files a scenario references (paths relative to its `scenario.json`), to fetch
+/// before `new Engine`. Throws if a reference is not a safe relative path.
+#[wasm_bindgen(js_name = requiredFiles)]
+pub fn wasm_required_files(scenario_json: &str) -> Result<Vec<String>, JsError> {
+    Ok(required_files(scenario_json)?)
+}
+
+/// `{"<reference>": "<file text>", ...}` as passed from JS.
+fn parse_files(files_json: &str) -> Result<Files, JsError> {
+    serde_json::from_str(files_json).map_err(|e| JsError::new(&format!("invalid manifest files: {e}")))
+}
+
 /// JS-facing handle to a simulated cluster. It owns Rust memory in WASM linear memory, so
 /// JS callers must call `.free()` when they are done with it.
 #[wasm_bindgen(js_name = Engine)]
@@ -62,11 +75,17 @@ pub struct WasmEngine(Engine);
 
 #[wasm_bindgen(js_class = Engine)]
 impl WasmEngine {
-    /// Build a cluster from scenario JSON and the apps it runs. Throws if the scenario is
-    /// invalid or an app it needs is missing from `apps`.
+    /// Build a cluster from scenario JSON, the manifest files it references (as JSON:
+    /// `{"<reference>": "<text>"}`, see `requiredFiles`) and the apps it runs. Throws if the
+    /// scenario is invalid or a file or app it needs is missing.
     #[wasm_bindgen(constructor)]
-    pub fn new(scenario_json: &str, apps: &WasmAppSet) -> Result<WasmEngine, JsError> {
-        Ok(WasmEngine(Engine::from_scenario(scenario_json, apps.0.clone())?))
+    pub fn new(scenario_json: &str, files_json: &str, apps: &WasmAppSet) -> Result<WasmEngine, JsError> {
+        let files = parse_files(files_json)?;
+        Ok(WasmEngine(Engine::from_scenario(
+            scenario_json,
+            &files,
+            apps.0.clone(),
+        )?))
     }
 
     /// Evaluate a single terminal command line and return the text to print.
@@ -107,9 +126,15 @@ impl WasmEngine {
 /// on a fresh engine and return the resulting status as JSON. Stateless: the same scenario and
 /// steps always give the same answer, which is what score verification relies on.
 #[wasm_bindgen(js_name = replay)]
-pub fn replay_session(scenario_json: &str, steps_json: &str, apps: &WasmAppSet) -> Result<String, JsError> {
+pub fn replay_session(
+    scenario_json: &str,
+    files_json: &str,
+    steps_json: &str,
+    apps: &WasmAppSet,
+) -> Result<String, JsError> {
+    let files = parse_files(files_json)?;
     let steps: Vec<Step> =
         serde_json::from_str(steps_json).map_err(|e| JsError::new(&format!("invalid steps: {e}")))?;
-    let status = Engine::replay(scenario_json, &steps, apps.0.clone())?;
+    let status = Engine::replay(scenario_json, &files, &steps, apps.0.clone())?;
     Ok(serde_json::to_string(&status).unwrap_or_else(|_| "{}".into()))
 }

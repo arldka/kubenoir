@@ -1,11 +1,11 @@
 //! End-to-end: sample scenario file -> Engine -> kubectl output.
 
-use engine::{AppSet, Engine};
+mod common;
 
-const SCENARIO: &str = include_str!("../../scenarios/sample-crashloop/scenario.json");
+use engine::{AppSet, Engine, Files};
 
 fn engine() -> Engine {
-    Engine::from_scenario(SCENARIO, AppSet::bundled()).expect("sample scenario loads")
+    common::engine("sample-crashloop")
 }
 
 #[test]
@@ -86,5 +86,5 @@ fn errors_read_like_kubectl() {
 
 #[test]
 fn invalid_scenario_is_rejected() {
-    assert!(Engine::from_scenario("{}", AppSet::bundled()).is_err());
+    assert!(Engine::from_scenario("{}", &Files::new(), AppSet::bundled()).is_err());
 }

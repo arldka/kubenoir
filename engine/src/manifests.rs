@@ -45,6 +45,20 @@ pub fn normalize_path(path: &str) -> String {
     path.to_string()
 }
 
+/// The objects in a YAML (or JSON) text: one per document, with `kind: List` expanded and empty
+/// documents skipped. `Err` is the parser's message.
+pub fn parse_documents(text: &str) -> Result<Vec<Value>, String> {
+    let mut objects = Vec::new();
+    for document in serde_yaml_ng::Deserializer::from_str(text) {
+        match Value::deserialize(document).map_err(|e| e.to_string())? {
+            Value::Null => {}
+            list if list["kind"] == "List" => objects.extend(list["items"].as_array().into_iter().flatten().cloned()),
+            value => objects.push(value),
+        }
+    }
+    Ok(objects)
+}
+
 /// Read and check every document of every file. `Err` is a whole-command error, printed alone.
 fn read_docs<'a>(args: &'a ManifestArgs, files: &Files) -> Result<Vec<Doc<'a>>, String> {
     let mut docs = Vec::new();
@@ -52,18 +66,10 @@ fn read_docs<'a>(args: &'a ManifestArgs, files: &Files) -> Result<Vec<Doc<'a>>, 
         let text = files
             .get(&normalize_path(file))
             .ok_or_else(|| format!("error: the path \"{file}\" does not exist"))?;
-        for document in serde_yaml_ng::Deserializer::from_str(text) {
-            let value = Value::deserialize(document)
-                .map_err(|e| format!("error: error parsing {file}: error converting YAML to JSON: {e}"))?;
-            match value {
-                Value::Null => {}
-                list if list["kind"] == "List" => {
-                    for item in list["items"].as_array().into_iter().flatten() {
-                        docs.push(doc(args, file, item.clone())?);
-                    }
-                }
-                value => docs.push(doc(args, file, value)?),
-            }
+        let objects = parse_documents(text)
+            .map_err(|e| format!("error: error parsing {file}: error converting YAML to JSON: {e}"))?;
+        for object in objects {
+            docs.push(doc(args, file, object)?);
         }
     }
     if docs.is_empty() {

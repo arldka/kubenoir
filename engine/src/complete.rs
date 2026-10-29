@@ -297,11 +297,7 @@ mod tests {
     use crate::sim::Engine;
 
     fn engine() -> Engine {
-        Engine::from_scenario(
-            include_str!("../../scenarios/crashloop-env-typo/scenario.json"),
-            crate::apps::AppSet::bundled(),
-        )
-        .unwrap()
+        crate::scenario::inline::repo("crashloop-env-typo")
     }
 
     /// `(start, candidates)` for a line.

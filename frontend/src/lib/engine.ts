@@ -1,7 +1,7 @@
 import { writable, type Readable } from 'svelte/store';
 import type { Engine } from './wasm/engine';
 import { parseStatus, type CaseStatus } from './caseStatus';
-import type { Registry } from './registry';
+import type { Registry, ScenarioSource } from './registry';
 import type { Completion } from './terminal/lineEditor';
 
 type EngineModule = typeof import('./wasm/engine');
@@ -67,20 +67,25 @@ function loadModule(): Promise<EngineModule> {
 }
 
 /**
- * Build a cluster from scenario JSON, replacing (and freeing) any previous one. The apps the
- * scenario's images run are fetched from `registry` first (cached there across restarts).
+ * Build a cluster from a scenario, replacing (and freeing) any previous one. The manifests it
+ * references and the apps its images run are fetched from `registry` first (apps are cached
+ * there across restarts).
  */
-export async function resetEngine(scenarioJson: string, registry: Registry): Promise<void> {
+export async function resetEngine(source: ScenarioSource, registry: Registry): Promise<void> {
 	state.set({ status: 'loading' });
 	try {
 		const mod = await loadModule();
-		const fetched = await registry.fetchApps(mod.requiredApps(scenarioJson));
+		const scenarioJson = source.json;
+		const [manifests, fetched] = await Promise.all([
+			registry.fetchManifests(source, mod.requiredFiles(scenarioJson)),
+			registry.fetchApps(mod.requiredApps(scenarioJson))
+		]);
 		// The AppSet is Rust memory; the Engine keeps its own copy, so free the set either way.
 		const apps = new mod.AppSet();
 		let next: Engine;
 		try {
 			for (const [ref, wasm] of fetched) apps.add(ref, wasm);
-			next = new mod.Engine(scenarioJson, apps);
+			next = new mod.Engine(scenarioJson, JSON.stringify(manifests), apps);
 		} finally {
 			apps.free();
 		}

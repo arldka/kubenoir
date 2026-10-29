@@ -1,5 +1,6 @@
-//! Scenario-supplied cluster configuration for the control loops: which nodes exist and what
-//! each container image runs. All of it is plain data in the open-source scenario file.
+//! Scenario-supplied cluster configuration for the control loops: what each container image
+//! runs. All of it is plain data in the open-source scenario file (nodes are Node objects in the
+//! store, like everything else in the cluster).
 
 use std::collections::BTreeMap;
 
@@ -13,8 +14,6 @@ pub const DEFAULT_PULL_SECONDS: i64 = 2;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ClusterConfig {
-    /// Node names pods can be scheduled onto.
-    pub nodes: Vec<String>,
     /// What runs per image reference, e.g. `"registry.example.com/payments-api:2.4.1"`.
     pub images: BTreeMap<String, ImageSpec>,
     /// The apps those images run, supplied by the caller rather than the scenario file.
@@ -59,7 +58,6 @@ mod tests {
     fn parses_apps_and_defaults() {
         let config: ClusterConfig = serde_json::from_str(
             r#"{
-                "nodes": ["a", "b"],
                 "images": {
                     "img:1": {"pullSeconds": 5, "app": "script@0.1.0", "config": {"logs": [{"line": "hi"}]}},
                     "img:2": {}
@@ -67,7 +65,6 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert_eq!(config.nodes, ["a", "b"]);
         assert_eq!(config.images["img:1"].app.as_deref(), Some("script@0.1.0"));
         assert_eq!(config.images["img:1"].config["logs"][0]["line"], "hi");
         assert!(config.images["img:2"].app.is_none() && config.images["img:2"].config.is_null());
@@ -87,6 +84,6 @@ mod tests {
     #[test]
     fn empty_config_is_valid() {
         let config: ClusterConfig = serde_json::from_str("{}").unwrap();
-        assert!(config.nodes.is_empty() && config.images.is_empty());
+        assert!(config.images.is_empty());
     }
 }

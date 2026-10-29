@@ -41,10 +41,11 @@ pub enum Step {
 }
 
 impl Engine {
-    /// Build a cluster from scenario JSON, running the given apps (every app the scenario's
-    /// images reference must be in `apps`; see `scenario::required_apps`).
-    pub fn from_scenario(scenario_json: &str, apps: AppSet) -> Result<Self, ScenarioError> {
-        let cluster = load(scenario_json, apps)?;
+    /// Build a cluster from scenario JSON and the manifest files it references (by reference;
+    /// see `scenario::required_files`), running the given apps (every app the scenario's images
+    /// reference must be in `apps`; see `scenario::required_apps`).
+    pub fn from_scenario(scenario_json: &str, manifests: &Files, apps: AppSet) -> Result<Self, ScenarioError> {
+        let cluster = load(scenario_json, manifests, apps)?;
         let mut engine = Engine {
             store: cluster.store,
             config: cluster.config,
@@ -63,8 +64,13 @@ impl Engine {
 
     /// Run a recorded session on a fresh engine and report how it ended: the stateless
     /// verification primitive. The same scenario and steps always give the same status.
-    pub fn replay(scenario_json: &str, steps: &[Step], apps: AppSet) -> Result<Status, ScenarioError> {
-        let mut engine = Engine::from_scenario(scenario_json, apps)?;
+    pub fn replay(
+        scenario_json: &str,
+        manifests: &Files,
+        steps: &[Step],
+        apps: AppSet,
+    ) -> Result<Status, ScenarioError> {
+        let mut engine = Engine::from_scenario(scenario_json, manifests, apps)?;
         for step in steps {
             match step {
                 Step::Eval { command } => {
@@ -180,7 +186,7 @@ mod tests {
     const SCENARIO: &str = r#"{"id":"t","cluster":{"now":"2026-10-27T18:30:00Z","pods":[]}}"#;
 
     fn engine() -> Engine {
-        Engine::from_scenario(SCENARIO, AppSet::bundled()).unwrap()
+        crate::scenario::inline::engine(SCENARIO)
     }
 
     #[test]

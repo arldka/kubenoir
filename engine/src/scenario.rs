@@ -1,27 +1,35 @@
-//! Scenario loading: parses an open-source scenario JSON file and seeds a `ClusterStore`.
+//! Scenario loading: parses an open-source scenario JSON file, reads the Kubernetes manifests it
+//! references and seeds a `ClusterStore` with them.
 //!
-//! Unknown fields are ignored so scenario files can carry data the engine does not use yet
-//! (narrative, win rules, ...).
+//! The JSON holds the story and the rules; every cluster object lives in YAML files listed in
+//! `cluster.manifests`, written exactly as `kubectl apply` would take them. Unknown top-level
+//! fields are ignored so scenario files can carry data the engine does not use (narrative, hints).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+use serde::de::IgnoredAny;
 use serde::Deserialize;
 
-use crate::api;
+use crate::api::{self, Origin};
 use crate::apps::{self, AppSet};
+use crate::clock;
 use crate::controllers::config::{ClusterConfig, ImageSpec};
 use crate::judge::{Finding, Rules, Success};
+use crate::manifests::{normalize_path, parse_documents, Files};
 use crate::names;
 use crate::store::{ClusterStore, StoreError};
 
 pub const DEFAULT_NAMESPACE: &str = "default";
 
+/// The scenario format this engine reads.
+pub const SCHEMA_VERSION: u32 = 2;
+
 #[derive(Debug, Deserialize)]
 struct Scenario {
+    #[serde(default, rename = "schemaVersion")]
+    schema_version: Option<u32>,
     /// Seeds deterministic uids and generated names.
     #[serde(default)]
     id: String,
@@ -45,20 +53,34 @@ struct ClusterSeed {
     /// `now`, so restart counts, logs, events and ages come out of the simulation itself.
     #[serde(default, rename = "startedAt")]
     started_at: Option<Time>,
-    /// Node names pods can be scheduled onto.
+    /// The YAML files holding the cluster's objects, relative to the scenario file.
     #[serde(default)]
-    nodes: Vec<String>,
+    manifests: Vec<String>,
+    // Inline objects were schemaVersion 1; their presence is reported, not ignored.
     #[serde(default)]
-    pods: Vec<Pod>,
-    /// Deployments; their ReplicaSets and pods are created by the simulated controllers.
+    nodes: Option<IgnoredAny>,
     #[serde(default)]
-    deployments: Vec<Deployment>,
+    pods: Option<IgnoredAny>,
+    #[serde(default)]
+    deployments: Option<IgnoredAny>,
 }
 
 #[derive(Debug)]
 pub enum ScenarioError {
     Parse(serde_json::Error),
-    MissingName { kind: &'static str, index: usize },
+    /// Wrong or missing `schemaVersion`, or fields of an older format.
+    Format(String),
+    /// A `cluster.manifests` entry that is not a safe relative path or was not supplied.
+    ManifestRef {
+        reference: String,
+        reason: String,
+    },
+    /// A document of a manifest file that does not parse or is refused by the API server.
+    Manifest {
+        file: String,
+        document: usize,
+        reason: String,
+    },
     Timeline(String),
     Rules(String),
     Image(String),
@@ -70,8 +92,12 @@ impl fmt::Display for ScenarioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ScenarioError::Parse(e) => write!(f, "invalid scenario JSON: {e}"),
-            ScenarioError::MissingName { kind, index } => {
-                write!(f, "invalid scenario: {kind} #{index} has no metadata.name")
+            ScenarioError::Format(reason) => write!(f, "invalid scenario: {reason}"),
+            ScenarioError::ManifestRef { reference, reason } => {
+                write!(f, "invalid scenario: cluster.manifests entry \"{reference}\" {reason}")
+            }
+            ScenarioError::Manifest { file, document, reason } => {
+                write!(f, "invalid scenario: {file}, document {document}: {reason}")
             }
             ScenarioError::Timeline(reason) => write!(f, "invalid scenario: {reason}"),
             ScenarioError::Rules(reason) => write!(f, "invalid scenario rules: {reason}"),
@@ -127,8 +153,98 @@ pub fn required_apps(json: &str) -> Result<Vec<String>, ScenarioError> {
     Ok(apps.into_iter().collect())
 }
 
-pub fn load(json: &str, apps: AppSet) -> Result<Cluster, ScenarioError> {
+/// The manifest files a scenario references (`cluster.manifests`), each checked to be a safe
+/// path inside the scenario's folder: what the caller must read or fetch and pass to `load`.
+pub fn required_files(json: &str) -> Result<Vec<String>, ScenarioError> {
+    #[derive(Deserialize)]
+    struct Refs {
+        #[serde(default)]
+        cluster: Option<RefsCluster>,
+    }
+    #[derive(Deserialize)]
+    struct RefsCluster {
+        #[serde(default)]
+        manifests: Vec<String>,
+    }
+    let parsed: Refs = serde_json::from_str(json).map_err(ScenarioError::Parse)?;
+    let refs = parsed.cluster.map(|c| c.manifests).unwrap_or_default();
+    for reference in &refs {
+        check_reference(reference)?;
+    }
+    Ok(refs)
+}
+
+/// A manifest reference must stay inside the scenario folder: relative, no `..`, plain names.
+fn check_reference(reference: &str) -> Result<(), ScenarioError> {
+    let bad = |reason: &str| {
+        Err(ScenarioError::ManifestRef {
+            reference: reference.to_string(),
+            reason: reason.to_string(),
+        })
+    };
+    let path = normalize_path(reference);
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') {
+        return bad("must be a relative path inside the scenario folder");
+    }
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return bad("must be a relative path inside the scenario folder");
+        }
+        if !segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        {
+            return bad("may only use A-Z a-z 0-9 . _ - in its path");
+        }
+    }
+    if !(path.ends_with(".yaml") || path.ends_with(".yml") || path.ends_with(".json")) {
+        return bad("must be a .yaml, .yml or .json file");
+    }
+    Ok(())
+}
+
+fn check_format(scenario: &Scenario) -> Result<(), ScenarioError> {
+    match scenario.schema_version {
+        Some(SCHEMA_VERSION) => {}
+        Some(1) => {
+            return Err(ScenarioError::Format(format!(
+                "schemaVersion 1 is no longer read; move cluster.nodes, cluster.pods and cluster.deployments into YAML files listed in cluster.manifests and set schemaVersion {SCHEMA_VERSION} (see docs/scenario-format.md)"
+            )))
+        }
+        Some(other) => {
+            return Err(ScenarioError::Format(format!(
+                "unsupported schemaVersion {other}; expected {SCHEMA_VERSION}"
+            )))
+        }
+        None => {
+            return Err(ScenarioError::Format(format!(
+                "schemaVersion is missing; expected {SCHEMA_VERSION}"
+            )))
+        }
+    }
+    let cluster = &scenario.cluster;
+    let inline: Vec<&str> = [
+        (cluster.nodes.is_some(), "cluster.nodes"),
+        (cluster.pods.is_some(), "cluster.pods"),
+        (cluster.deployments.is_some(), "cluster.deployments"),
+    ]
+    .into_iter()
+    .filter_map(|(present, field)| present.then_some(field))
+    .collect();
+    if !inline.is_empty() {
+        return Err(ScenarioError::Format(format!(
+            "{} must be YAML files listed in cluster.manifests",
+            inline.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// Build the cluster a scenario describes. `files` holds the text of every manifest it
+/// references (see `required_files`), keyed by the reference; `apps` every app its images run.
+pub fn load(json: &str, files: &Files, apps: AppSet) -> Result<Cluster, ScenarioError> {
     let scenario: Scenario = serde_json::from_str(json).map_err(ScenarioError::Parse)?;
+    check_format(&scenario)?;
     for (image, spec) in &scenario.images {
         let Some(app) = spec.app.as_deref() else { continue };
         if !apps::is_reference(app) {
@@ -142,51 +258,9 @@ pub fn load(json: &str, apps: AppSet) -> Result<Cluster, ScenarioError> {
             )));
         }
     }
-    let store = ClusterStore::new()?;
-    store.set_seed(names::seed_for(&scenario.id));
-    let started_at = scenario
-        .cluster
-        .started_at
-        .clone()
-        .unwrap_or_else(|| scenario.cluster.now.clone());
-    api::seed_system_namespaces(&store, crate::clock::secs(&started_at))?;
-
-    for (index, mut pod) in scenario.cluster.pods.into_iter().enumerate() {
-        let name = pod
-            .metadata
-            .name
-            .clone()
-            .filter(|n| !n.is_empty())
-            .ok_or(ScenarioError::MissingName { kind: "Pod", index })?;
-        let namespace = pod
-            .metadata
-            .namespace
-            .get_or_insert_with(|| DEFAULT_NAMESPACE.to_string())
-            .clone();
-        let manifest = serde_json::to_value(&pod).map_err(ScenarioError::Parse)?;
-        store.insert("Pod", "v1", &namespace, &name, &manifest)?;
-    }
-
-    for (index, mut deployment) in scenario.cluster.deployments.into_iter().enumerate() {
-        let name = deployment
-            .metadata
-            .name
-            .clone()
-            .filter(|n| !n.is_empty())
-            .ok_or(ScenarioError::MissingName {
-                kind: "Deployment",
-                index,
-            })?;
-        let namespace = deployment
-            .metadata
-            .namespace
-            .get_or_insert_with(|| DEFAULT_NAMESPACE.to_string())
-            .clone();
-        let manifest = serde_json::to_value(&deployment).map_err(ScenarioError::Parse)?;
-        store.insert("Deployment", "apps/v1", &namespace, &name, &manifest)?;
-    }
 
     let now = scenario.cluster.now;
+    let started_at = scenario.cluster.started_at.unwrap_or_else(|| now.clone());
     let warmup = now.0.as_second() - started_at.0.as_second();
     if warmup < 0 {
         return Err(ScenarioError::Timeline("cluster.startedAt is after cluster.now".into()));
@@ -199,6 +273,12 @@ pub fn load(json: &str, apps: AppSet) -> Result<Cluster, ScenarioError> {
         )));
     }
 
+    let store = ClusterStore::new()?;
+    store.set_seed(names::seed_for(&scenario.id));
+    let start = clock::secs(&started_at);
+    api::seed_system_namespaces(&store, start)?;
+    seed_manifests(&store, &scenario.cluster.manifests, files, start)?;
+
     let rules = Rules {
         success: scenario.success,
         findings: scenario.findings,
@@ -206,7 +286,6 @@ pub fn load(json: &str, apps: AppSet) -> Result<Cluster, ScenarioError> {
     rules.validate().map_err(ScenarioError::Rules)?;
 
     let config = ClusterConfig {
-        nodes: scenario.cluster.nodes,
         images: scenario.images,
         apps,
     };
@@ -219,51 +298,281 @@ pub fn load(json: &str, apps: AppSet) -> Result<Cluster, ScenarioError> {
     })
 }
 
+/// Create every object of every referenced file, through the same write path as `kubectl
+/// apply` but keeping what the author wrote (status, creation time). Namespaces come first, so
+/// a file may hold objects of a namespace it declares further down.
+fn seed_manifests(store: &ClusterStore, refs: &[String], files: &Files, start: i64) -> Result<(), ScenarioError> {
+    let mut documents = Vec::new();
+    for reference in refs {
+        check_reference(reference)?;
+        let text = files
+            .get(&normalize_path(reference))
+            .ok_or_else(|| ScenarioError::ManifestRef {
+                reference: reference.clone(),
+                reason: "was not supplied (is the file next to scenario.json?)".into(),
+            })?;
+        let objects = parse_documents(text).map_err(|reason| ScenarioError::Manifest {
+            file: reference.clone(),
+            document: 1,
+            reason: format!("not valid YAML: {reason}"),
+        })?;
+        documents.extend(
+            objects
+                .into_iter()
+                .enumerate()
+                .map(|(i, object)| (reference.as_str(), i + 1, object)),
+        );
+    }
+    documents.sort_by_key(|(_, _, object)| object["kind"] != "Namespace");
+    for (file, document, object) in documents {
+        api::create(store, &object, DEFAULT_NAMESPACE, start, Origin::Authored).map_err(|e| match e {
+            api::ApiError::Store(e) => ScenarioError::Store(e),
+            other => ScenarioError::Manifest {
+                file: file.to_string(),
+                document,
+                reason: other.to_string(),
+            },
+        })?;
+    }
+    Ok(())
+}
+
+/// Test fixtures in the shape older scenarios had (`cluster.nodes` as names, `cluster.pods` and
+/// `cluster.deployments` inline), turned into a current scenario and its manifest file.
+#[cfg(test)]
+pub(crate) mod inline {
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    pub const FILE: &str = "manifests/cluster.yaml";
+
+    pub fn convert(json: &str) -> (String, Files) {
+        let mut scenario: Value = serde_json::from_str(json).expect("fixture is JSON");
+        let cluster = scenario["cluster"].as_object_mut().expect("fixture has a cluster");
+        let mut documents: Vec<Value> = Vec::new();
+        if let Some(Value::Array(nodes)) = cluster.remove("nodes") {
+            for node in nodes {
+                documents.push(json!({"apiVersion": "v1", "kind": "Node", "metadata": {"name": node}}));
+            }
+        }
+        for field in ["pods", "deployments"] {
+            if let Some(Value::Array(objects)) = cluster.remove(field) {
+                documents.extend(objects);
+            }
+        }
+        cluster.insert("manifests".into(), json!([FILE]));
+        scenario["schemaVersion"] = json!(SCHEMA_VERSION);
+        let text = documents
+            .iter()
+            .map(|d| serde_json::to_string(d).expect("serializable"))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+        (scenario.to_string(), Files::from([(FILE.to_string(), text)]))
+    }
+
+    /// Load an inline-shaped fixture.
+    pub fn load(json: &str, apps: AppSet) -> Result<Cluster, ScenarioError> {
+        let (scenario, files) = convert(json);
+        super::load(&scenario, &files, apps)
+    }
+
+    /// An engine for one of the repository's scenarios (`scenarios/<id>/`), with its manifests.
+    pub fn repo(id: &str) -> crate::sim::Engine {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scenarios")
+            .join(id);
+        let json = std::fs::read_to_string(folder.join("scenario.json")).expect("scenario exists");
+        let files: Files = required_files(&json)
+            .expect("valid references")
+            .into_iter()
+            .map(|r| {
+                let text = std::fs::read_to_string(folder.join(&r)).expect("manifest exists");
+                (r, text)
+            })
+            .collect();
+        crate::sim::Engine::from_scenario(&json, &files, AppSet::bundled()).expect("scenario loads")
+    }
+
+    /// An engine for an inline-shaped fixture.
+    pub fn engine(json: &str) -> crate::sim::Engine {
+        let (scenario, files) = convert(json);
+        crate::sim::Engine::from_scenario(&scenario, &files, AppSet::bundled()).expect("fixture loads")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const NOW: &str = "2026-10-27T18:30:00Z";
 
-    fn load_empty(json: &str) -> Result<Cluster, ScenarioError> {
-        load(json, AppSet::default())
-    }
-
-    fn pod(extra_meta: &str) -> String {
-        format!(r#"{{"apiVersion":"v1","kind":"Pod","metadata":{{{extra_meta}}},"spec":{{"containers":[]}}}}"#)
-    }
-
-    fn scenario(pods: &[String]) -> String {
+    fn scenario_with(manifests: &[&str]) -> String {
         format!(
-            r#"{{"id":"t","title":"T","cluster":{{"now":"{NOW}","pods":[{}]}}}}"#,
-            pods.join(",")
+            r#"{{"schemaVersion":2,"id":"t","cluster":{{"now":"{NOW}","manifests":{}}}}}"#,
+            serde_json::to_string(manifests).unwrap()
         )
     }
 
+    fn files(entries: &[(&str, &str)]) -> Files {
+        entries.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    const PODS: &str = "\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: a
+spec:
+  containers: [{name: c, image: nginx:1.27}]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: b
+  namespace: prod
+spec:
+  containers: [{name: c, image: nginx:1.27}]
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+";
+
     #[test]
-    fn loads_pods_and_defaults_namespace() {
-        let cluster = load_empty(&scenario(&[
-            pod(r#""name":"a""#),
-            pod(r#""name":"b","namespace":"prod""#),
-        ]))
+    fn loads_manifests_and_defaults_namespace() {
+        let cluster = load(
+            &scenario_with(&["manifests/pods.yaml"]),
+            &files(&[("manifests/pods.yaml", PODS)]),
+            AppSet::default(),
+        )
         .unwrap();
-        assert!(cluster.store.get("Pod", "default", "a").unwrap().is_some());
+        let a = cluster.store.get("Pod", "default", "a").unwrap().unwrap();
+        assert_eq!(a["metadata"]["namespace"], "default");
+        assert_eq!(a["spec"]["restartPolicy"], "Always", "server-side defaults apply");
         assert!(cluster.store.get("Pod", "prod", "b").unwrap().is_some());
+        assert!(cluster.store.get("Namespace", "", "kube-system").unwrap().is_some());
+    }
+
+    #[test]
+    fn authored_status_is_kept() {
+        let static_pod = "\
+apiVersion: v1
+kind: Pod
+metadata: {name: a, creationTimestamp: '2026-10-24T18:30:00Z'}
+spec:
+  containers: [{name: c, image: nginx:1.27}]
+status: {phase: Running}
+";
+        let cluster = load(
+            &scenario_with(&["a.yaml"]),
+            &files(&[("a.yaml", static_pod)]),
+            AppSet::default(),
+        )
+        .unwrap();
+        let a = cluster.store.get("Pod", "default", "a").unwrap().unwrap();
+        assert_eq!(a["status"]["phase"], "Running");
+        assert_eq!(a["metadata"]["creationTimestamp"], "2026-10-24T18:30:00Z");
+    }
+
+    #[test]
+    fn invalid_documents_name_their_file_and_index() {
+        let bad = format!("{PODS}---\napiVersion: v1\nkind: Pod\nmetadata: {{name: c}}\nspec:\n  containers: [{{name: c, imagee: x}}]\n");
+        let err = load(
+            &scenario_with(&["ok.yaml", "bad.yaml"]),
+            &files(&[
+                ("ok.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: fine}\n"),
+                ("bad.yaml", &bad),
+            ]),
+            AppSet::default(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
         assert_eq!(
-            cluster.store.get("Pod", "default", "a").unwrap().unwrap()["metadata"]["namespace"],
-            "default"
+            err,
+            "invalid scenario: bad.yaml, document 4: Error from server (BadRequest): Pod in version \"v1\" cannot be handled as a Pod: strict decoding error: unknown field \"spec.containers[0].imagee\""
+        );
+
+        let err = load(
+            &scenario_with(&["y.yaml"]),
+            &files(&[("y.yaml", "kind: [")]),
+            AppSet::default(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            err.starts_with("invalid scenario: y.yaml, document 1: not valid YAML: "),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn manifest_references_must_be_supplied_and_stay_inside_the_folder() {
+        let err = load(&scenario_with(&["missing.yaml"]), &Files::new(), AppSet::default())
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            err,
+            "invalid scenario: cluster.manifests entry \"missing.yaml\" was not supplied (is the file next to scenario.json?)"
+        );
+        for reference in ["../other/x.yaml", "/etc/x.yaml", "a//b.yaml", "a/./b.yaml", ""] {
+            let err = required_files(&scenario_with(&[reference])).err().unwrap().to_string();
+            assert!(
+                err.contains("must be a relative path inside the scenario folder"),
+                "{reference}: {err}"
+            );
+        }
+        assert!(required_files(&scenario_with(&["x.txt"]))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains(".yaml"));
+        assert!(required_files(&scenario_with(&["a b.yaml"])).is_err());
+        assert_eq!(
+            required_files(&scenario_with(&["./manifests/a.yaml", "b.yml"])).unwrap(),
+            ["./manifests/a.yaml", "b.yml"]
+        );
+        assert!(required_files(r#"{"cluster":{"now":"x"}}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_bad_document_leaves_no_cluster() {
+        // Errors are returned before a Cluster exists, so nothing partial reaches the engine.
+        let result = load(
+            &scenario_with(&["a.yaml"]),
+            &files(&[("a.yaml", "apiVersion: v1\nkind: Widget\nmetadata: {name: w}\n")]),
+            AppSet::default(),
+        );
+        assert!(matches!(result, Err(ScenarioError::Manifest { document: 1, .. })));
+    }
+
+    #[test]
+    fn schema_version_must_be_current_and_inline_objects_are_refused() {
+        let err = |json: &str| load(json, &Files::new(), AppSet::default()).err().unwrap().to_string();
+        let v1 = format!(r#"{{"schemaVersion":1,"cluster":{{"now":"{NOW}"}}}}"#);
+        assert!(err(&v1).contains("schemaVersion 1 is no longer read"), "{}", err(&v1));
+        let none = format!(r#"{{"cluster":{{"now":"{NOW}"}}}}"#);
+        assert_eq!(err(&none), "invalid scenario: schemaVersion is missing; expected 2");
+        let inline = format!(r#"{{"schemaVersion":2,"cluster":{{"now":"{NOW}","nodes":["a"],"pods":[]}}}}"#);
+        assert_eq!(
+            err(&inline),
+            "invalid scenario: cluster.nodes, cluster.pods must be YAML files listed in cluster.manifests"
         );
     }
 
     fn with_app(app: &str) -> String {
         format!(
-            r#"{{"id":"t","images":{{"img:1":{{"app":"{app}"}},"img:2":{{"app":"{app}"}},"img:3":{{}}}},"cluster":{{"now":"{NOW}"}}}}"#
+            r#"{{"schemaVersion":2,"id":"t","images":{{"img:1":{{"app":"{app}"}},"img:2":{{"app":"{app}"}},"img:3":{{}}}},"cluster":{{"now":"{NOW}"}}}}"#
         )
     }
 
     #[test]
     fn app_references_need_a_version() {
-        let err = load(&with_app("db-client"), AppSet::bundled())
+        let err = load(&with_app("db-client"), &Files::new(), AppSet::bundled())
             .err()
             .unwrap()
             .to_string();
@@ -275,12 +584,15 @@ mod tests {
 
     #[test]
     fn every_referenced_app_must_be_supplied() {
-        let err = load_empty(&with_app("db-client@0.1.0")).err().unwrap().to_string();
+        let err = load(&with_app("db-client@0.1.0"), &Files::new(), AppSet::default())
+            .err()
+            .unwrap()
+            .to_string();
         assert!(
             err.contains("img:1 runs app db-client@0.1.0, which was not supplied"),
             "{err}"
         );
-        assert!(load(&with_app("db-client@0.1.0"), AppSet::bundled()).is_ok());
+        assert!(load(&with_app("db-client@0.1.0"), &Files::new(), AppSet::bundled()).is_ok());
     }
 
     #[test]
@@ -294,34 +606,62 @@ mod tests {
     }
 
     #[test]
-    fn pods_are_optional() {
-        let cluster = load_empty(&scenario(&[])).unwrap();
+    fn manifests_are_optional() {
+        let cluster = load(&scenario_with(&[]), &Files::new(), AppSet::default()).unwrap();
         assert!(cluster.store.list("Pod", "default").unwrap().is_empty());
     }
 
     #[test]
-    fn rejects_pod_without_name() {
-        let err = load_empty(&scenario(&[pod(r#""namespace":"x""#)])).err().unwrap();
-        assert!(matches!(err, ScenarioError::MissingName { index: 0, .. }), "{err}");
-    }
+    fn rejects_pod_without_name_and_duplicates() {
+        let nameless =
+            "apiVersion: v1\nkind: Pod\nmetadata: {namespace: default}\nspec:\n  containers: [{name: c, image: x:1}]\n";
+        let err = load(
+            &scenario_with(&["a.yaml"]),
+            &files(&[("a.yaml", nameless)]),
+            AppSet::default(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(err.contains("metadata.name: Required value"), "{err}");
 
-    #[test]
-    fn rejects_duplicate_pods() {
-        let err = load_empty(&scenario(&[pod(r#""name":"a""#), pod(r#""name":"a""#)]))
-            .err()
-            .unwrap();
+        let twice = "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: a}\n---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: a}\n";
+        let err = load(
+            &scenario_with(&["a.yaml"]),
+            &files(&[("a.yaml", twice)]),
+            AppSet::default(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            matches!(err, ScenarioError::Store(StoreError::AlreadyExists { .. })),
+            err.contains("document 2: Error from server (AlreadyExists): configmaps \"a\" already exists"),
             "{err}"
         );
     }
 
     #[test]
     fn rejects_malformed_json() {
-        assert!(matches!(load_empty("{nope").err().unwrap(), ScenarioError::Parse(_)));
         assert!(matches!(
-            load_empty(r#"{"cluster":{}}"#).err().unwrap(),
+            load("{nope", &Files::new(), AppSet::default()).err().unwrap(),
             ScenarioError::Parse(_)
         ));
+        assert!(matches!(
+            load(r#"{"cluster":{}}"#, &Files::new(), AppSet::default())
+                .err()
+                .unwrap(),
+            ScenarioError::Parse(_)
+        ));
+    }
+
+    #[test]
+    fn inline_fixtures_convert() {
+        let cluster = inline::load(
+            r#"{"id":"t","cluster":{"now":"2026-10-27T18:30:00Z","nodes":["n1"],"pods":[{"apiVersion":"v1","kind":"Pod","metadata":{"name":"a"},"spec":{"containers":[{"name":"c","image":"x:1"}]}}]}}"#,
+            AppSet::default(),
+        )
+        .unwrap();
+        assert!(cluster.store.get("Node", "", "n1").unwrap().is_some());
+        assert!(cluster.store.get("Pod", "default", "a").unwrap().is_some());
     }
 }

@@ -62,18 +62,39 @@ describe('parseAppRef', () => {
 
 describe('Registry', () => {
 	it('fetches a scenario from the first source that has it', async () => {
-		const fetch = fakeFetch({ '/registry/scenarios/case.json': '{"id":"case"}' });
-		expect(await new Registry(sources(), fetch).fetchScenario('case')).toBe('{"id":"case"}');
+		const fetch = fakeFetch({ '/registry/scenarios/case/scenario.json': '{"id":"case"}' });
+		expect(await new Registry(sources(), fetch).fetchScenario('case')).toEqual({
+			json: '{"id":"case"}',
+			base: '/registry/scenarios/case/'
+		});
 		expect(fetch.mock.calls.map((c) => String(c[0]))).toEqual([
-			'https://remote/scenarios/case.json',
-			'/registry/scenarios/case.json'
+			'https://remote/scenarios/case/scenario.json',
+			'/registry/scenarios/case/scenario.json'
 		]);
+	});
+
+	it('fetches manifests from the folder of the source that served the scenario', async () => {
+		const fetch = fakeFetch({
+			'https://remote/scenarios/case/scenario.json': '{}',
+			'https://remote/scenarios/case/manifests/a.yaml': 'A',
+			'https://remote/scenarios/case/b.yaml': 'B',
+			'/registry/scenarios/case/manifests/a.yaml': 'LOCAL'
+		});
+		const registry = new Registry(sources(), fetch);
+		const source = await registry.fetchScenario('case');
+		expect(await registry.fetchManifests(source, ['manifests/a.yaml', './b.yaml'])).toEqual({
+			'manifests/a.yaml': 'A',
+			'./b.yaml': 'B'
+		});
+		await expect(registry.fetchManifests(source, ['gone.yaml'])).rejects.toThrow(
+			'Manifest gone.yaml could not be fetched; tried https://remote/scenarios/case/gone.yaml (404)'
+		);
 	});
 
 	it('names every place it tried when a scenario is missing', async () => {
 		const registry = new Registry(sources(), fakeFetch({}, ['https://remote']));
 		await expect(registry.fetchScenario('nope')).rejects.toThrow(
-			'Case "nope" could not be fetched; tried https://remote/scenarios/nope.json (connection refused), /registry/scenarios/nope.json (404)'
+			'Case "nope" could not be fetched; tried https://remote/scenarios/nope/scenario.json (connection refused), /registry/scenarios/nope/scenario.json (404)'
 		);
 		await expect(registry.fetchScenario('../x')).rejects.toThrow(/Invalid case id/);
 	});
@@ -126,9 +147,9 @@ describe('Registry', () => {
 describe('pickCase', () => {
 	const files = {
 		'/registry/scenarios/index.json': JSON.stringify([{ id: 'first' }, { id: 'second' }]),
-		'/registry/scenarios/first.json': 'FIRST',
-		'/registry/scenarios/second.json': 'SECOND',
-		'http://dev/mine.json': 'MINE'
+		'/registry/scenarios/first/scenario.json': 'FIRST',
+		'/registry/scenarios/second/scenario.json': 'SECOND',
+		'http://dev/cases/mine.json': 'MINE'
 	};
 	const pick = (query: string, dev = false) => {
 		const fetch = fakeFetch(files);
@@ -139,14 +160,14 @@ describe('pickCase', () => {
 	};
 
 	it('plays ?case=, else the first listed case', async () => {
-		expect(await pick('')).toBe('FIRST');
-		expect(await pick('case=second')).toBe('SECOND');
+		expect(await pick('')).toEqual({ json: 'FIRST', base: '/registry/scenarios/first/' });
+		expect((await pick('case=second')).json).toBe('SECOND');
 		await expect(pick('case=nope')).rejects.toThrow(/Case "nope" could not be fetched/);
 	});
 
 	it('plays ?scenarioUrl= only in dev builds', async () => {
-		expect(await pick('scenarioUrl=http://dev/mine.json', true)).toBe('MINE');
-		expect(await pick('scenarioUrl=http://dev/mine.json', false)).toBe('FIRST');
+		expect(await pick('scenarioUrl=http://dev/cases/mine.json', true)).toEqual({ json: 'MINE', base: 'http://dev/cases/' });
+		expect((await pick('scenarioUrl=http://dev/cases/mine.json', false)).json).toBe('FIRST');
 		await expect(pick('scenarioUrl=http://dev/gone.json', true)).rejects.toThrow(/gone.json could not be fetched \(404\)/);
 	});
 

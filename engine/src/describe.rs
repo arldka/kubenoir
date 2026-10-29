@@ -622,7 +622,7 @@ mod tests {
                 }]}
             }]}
         }"#;
-        let mut e = Engine::from_scenario(json, crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::engine(json);
         e.advance(47 * 60);
         e
     }
@@ -744,8 +744,7 @@ mod tests {
 
     #[test]
     fn static_pods_and_terminating_pods_describe_too() {
-        let json = include_str!("../../scenarios/sample-crashloop/scenario.json");
-        let mut e = Engine::from_scenario(json, crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::repo("sample-crashloop");
         let out = e.eval("kubectl describe pod payments-api-5c7d4f9b8-9hjv2");
         assert!(out.contains("      Reason:       CrashLoopBackOff"), "{out}");
         assert!(out.contains("    Restart Count:  14"), "{out}");

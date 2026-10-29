@@ -253,8 +253,6 @@ pub enum Origin {
     Client,
     /// Authored cluster state (a scenario's manifests): keep what the author wrote, so objects
     /// can carry a status and a past.
-    // Used by the scenario manifest loader (SPEC T3).
-    #[cfg_attr(not(test), allow(dead_code))]
     Authored,
 }
 

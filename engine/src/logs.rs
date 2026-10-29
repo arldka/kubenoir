@@ -151,7 +151,7 @@ mod tests {
     /// `app` crashes 1 s after starting; `sidecar` just runs. Pulling takes 2 s,
     /// so `app` starts at +2 s, crashes at +3 s and restarts at +13 s.
     fn engine() -> Engine {
-        Engine::from_scenario(
+        crate::scenario::inline::engine(
             r#"{
             "id": "l",
             "images": {
@@ -163,9 +163,8 @@ mod tests {
                 "apiVersion": "v1", "kind": "Pod", "metadata": {"name": "p"},
                 "spec": {"containers": [{"name": "app", "image": "app:1"}, {"name": "sidecar", "image": "side:1"}]}
             }]}
-        }"#, crate::apps::AppSet::bundled()
+        }"#,
         )
-        .unwrap()
     }
 
     const DEFAULTED: &str = "Defaulted container \"app\" out of: app, sidecar";
@@ -273,8 +272,7 @@ mod tests {
 
     #[test]
     fn static_pods_have_no_output() {
-        let json = include_str!("../../scenarios/sample-crashloop/scenario.json");
-        let mut e = Engine::from_scenario(json, crate::apps::AppSet::bundled()).unwrap();
+        let mut e = crate::scenario::inline::repo("sample-crashloop");
         assert_eq!(e.eval("kubectl logs web-7d9f8b6c5-x2k4p"), "");
     }
 }

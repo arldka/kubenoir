@@ -8,7 +8,7 @@ export interface ScenarioMeta {
 	hints: string[];
 }
 
-export const SUPPORTED_SCHEMA_VERSION = 1;
+export const SUPPORTED_SCHEMA_VERSION = 2;
 
 /** Parse and validate scenario metadata, with errors an author can act on. */
 export function parseScenarioMeta(json: string): ScenarioMeta {

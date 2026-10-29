@@ -222,7 +222,8 @@ test('the case and its apps are fetched from the local registry', async ({ page 
 	expect(fetched).toEqual(
 		expect.arrayContaining([
 			'/registry/scenarios/index.json',
-			'/registry/scenarios/crashloop-env-typo.json',
+			'/registry/scenarios/crashloop-env-typo/scenario.json',
+			'/registry/scenarios/crashloop-env-typo/manifests/workloads.yaml',
 			'/registry/apps/db-client/0.1.0.wasm',
 			'/registry/apps/nginx/0.1.0.wasm'
 		])
@@ -234,5 +235,5 @@ test('the case and its apps are fetched from the local registry', async ({ page 
 test('an unknown case says what could not be found', async ({ page }) => {
 	await page.goto('/?case=no-such-case');
 	await expect(page.getByRole('alert')).toContainText('Case "no-such-case" could not be fetched');
-	await expect(page.getByRole('alert')).toContainText('/registry/scenarios/no-such-case.json (404)');
+	await expect(page.getByRole('alert')).toContainText('/registry/scenarios/no-such-case/scenario.json (404)');
 });
