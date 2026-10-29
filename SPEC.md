@@ -19,6 +19,7 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - C9: kustomize/helm ⊥ scope (no `apply -k`, no `helm`); unsupported → V5 error.
 - C10: `make ci` green ∀ task.
 - C11: scenario JSON = story & rules only (`id`, `title`, `briefing`, `objective`, `hints`, `success`, `findings`, `images`, clock). ∀ k8s objects (Nodes incl.) ∈ YAML files it references; ⊥ k8s objects inline in JSON.
+- C12: `kubectl edit` ⊥ scope (change state by editing a file & `kubectl apply|replace`); terminal ships a small `vim` for the terminal's own files instead.
 
 ## §I interfaces
 
@@ -29,15 +30,17 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - scenario: `images.<ref>` → add `exists`(default true) & `pullSecret`(name ?) → ImagePullBackOff modeling.
 - scenario: `success`/`constraints` `select.kind` → ∀ stored kind (not only `Pod`/`Deployment`/`ReplicaSet`/`Event`).
 - scenario: `findings.when.command.verb` → ∀ parsed verb.
-- cmd: `kubectl get|describe|logs|delete` (exist) + `apply -f`, `create <kind>|-f`, `run`, `edit`, `replace --force`, `patch`, `set env|image`, `rollout status|history|undo|restart`, `scale`, `expose`, `exec`, `label`, `cordon|uncordon|drain`, `explain`, `auth can-i` ?, `--help` ∀ verb.
-- cmd: flags `-n`, `-A`, `-o yaml|json|wide|name|jsonpath=`, `-w`, `-l`, `-c`.
+- cmd: `kubectl get|describe|logs|delete` (exist) + `apply -f`, `create <kind>|-f`, `run`, `replace --force`, `patch`, `set env|image`, `rollout status|history|undo|restart`, `scale`, `expose`, `exec`, `label`, `cordon|uncordon|drain`, `explain`, `auth can-i` ?, `--help` ∀ verb.
+- cmd: flags `-n`, `-A`, `-o yaml|json|wide|name|jsonpath=`, `-l`, `-c`.
 - shell: pipes `|`, builtins `echo [-n]`, `base64 [-d]`, `grep`, `cat`, `head`, `curl` (via `kubectl exec`), heredoc ? for `apply -f -`.
 - fs: player virtual fs (files for `apply -f`), seeded by scenario.
 - app ABI: WASI `wasm32-wasip1`; add preopened fs (ConfigMap/Secret/emptyDir/PVC mounts).
 - app ABI: listen declaration (port) + request handler export → reply for curl/probes.
 - app ABI: connect host call `connect(host, port)` → `NxDomain|Refused|Timeout|Connected` answered by oracle.
 - js: `Engine.eval`, `advance`, `status`, `complete` (exist; keep shape); constructor gains manifest files; `replay` follows, ⊥ priority.
-- js: editor hook for `kubectl edit` (frontend opens buffer, returns text to engine).
+- shell: `vim FILE` | `vi FILE` → engine validates path (relative, safe, ⊥ dir) & queues an editor request; ⊥ in a pipeline | w/ redirect.
+- js: `Engine.readFile(path)` → text|undefined; `Engine.takeEditorRequest()` → path|undefined (set by `vim`); `Engine.writeFile(path, text)` (exists).
+- ui: `frontend/src/lib/terminal/vim.ts` = pure modal-editor state machine (keys in → screen model out); terminal draws it full-screen.
 - docs: `docs/scenario-format.md`, `docs/apps.md`, `CLAUDE.md` container-apps bullet.
 
 ## §V invariants
@@ -60,11 +63,14 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - V16: image ref ∉ catalog | missing pull secret → `ErrImagePull` → `ImagePullBackOff` w/ events; container ⊥ runs.
 - V17: Job: failed pod count > `backoffLimit` → Job `Failed`; CronJob fires on cron schedule vs virtual clock, honors `concurrencyPolicy`.
 - V18: probe outcome derived from app listen/handler + oracle-equivalent local check; liveness fail ×`failureThreshold` → container restart w/ event.
-- V19: `kubectl edit` → saved buffer goes through same path as `replace` (V1–V3); unchanged buffer → `Edit cancelled, no changes made.`
 - V20: ∀ scenario ∈ `scenarios/` has `solution.json` closing case under `make scenario-check`.
 - V21: ∀ pilot scenario → ≥1 alternate valid fix in tests accepted (off-path), where one exists.
 - V22: scenario manifests load through same path as player `apply` (V1, V2); invalid doc → load error naming file & doc index.
 - V23: manifest ref missing | escapes scenario dir | unreadable → load error naming ref; ⊥ partial cluster.
+- V24: vim `:w`|`:wq`|`:x` → terminal file text = buffer lines joined `\n` + final `\n`; ⊥ any other file touched; ⊥ cluster change (only `kubectl apply|create|replace` reads a file).
+- V25: unsaved edits + `:q` → refused w/ `E37: No write since last change (add ! to override)`; `:q!` discards; modified buffer shows `[+]`.
+- V26: insert-mode Tab → 2 spaces, ⊥ `\t` (YAML); Enter, `o`, `O` keep previous line's indent.
+- V27: ∀ unsupported vim key|ex command → status-line message naming it (`E492: Not an editor command: foo`); ⊥ silent ignore, ⊥ partial effect.
 
 ## §T tasks
 
@@ -81,7 +87,9 @@ T7|x|minimal shell: tokenizer w/ pipes, `echo -n`, `base64 -d`, `grep`, `head`|I
 T8|x|output fidelity: `-o yaml\|json\|name\|wide\|jsonpath`, `-l`, `-A`, golden tests vs real kubectl captures|V6,I.cmd
 T9|x|`--help` ∀ verb + `explain` from `k8s-openapi` docs|V7
 T10|x|unsupported verb/flag/kind errors audit|V5
-T12|.|`kubectl edit` frontend buffer + engine replace path|V19,I.js
+T35|.|engine: `vim`\|`vi` FILE command (parse, path rules, queue editor request), `Engine.readFile`, `takeEditorRequest`; judge verb `vim` (name = path); help page|C12,V5,V27,I.shell,I.js
+T36|.|`frontend/src/lib/terminal/vim.ts`: modal editor state machine, vitest-covered: normal/insert/ex modes; h j k l w b e 0 $ gg G; i a I A o O; x dd yy p P u Ctrl-R; counts; `:w :q :wq :x :q!`; Tab→spaces, auto-indent|V24,V25,V26,V27,I.ui
+T37|.|terminal integration: full-screen render (alt screen, mode/`[+]` status line, `~` rows), key routing in `session.ts`, `:w` → `Engine.writeFile`, back to prompt on quit; e2e: edit a manifest then `kubectl apply -f` it|V24,V25,I.js
 T13|.|verbs: `run`, `create namespace\|deployment\|configmap\|secret`, `set image`, `scale`, `rollout status\|history\|undo`, `label`, `expose`|I.cmd
 T14|.|Namespace kind + cluster-scoped resources + `namespaces "x" not found`|V1
 T15|.|env `valueFrom`/`envFrom` from ConfigMap/Secret at start|V12,V15
@@ -96,7 +104,7 @@ T23|.|`db-client` new version: connect via oracle host call, server described by
 T24|.|NetworkPolicy eval in oracle|V10
 T25|.|probes (http/tcp/exec) + liveness restarts + readiness → endpoints|V18,V11
 T26|.|pilot #1 New Badge (namespace)|T9,T14,V20
-T27|.|pilot #3 Changing the Story (pod immutability; `echo-env` app)|T5,T12,V3,V20
+T27|.|pilot #3 Changing the Story (pod immutability; `echo-env` app; player edits the pod manifest with vim, then `replace --force`)|T5,T35,T36,T37,V3,V20
 T28|.|pilot #8 Sealed Envelope (secret base64 newline)|T7,T15,V15,V20,V21
 T29|.|pilot #15 Wrong Mugshot (ImagePullBackOff)|T16,V16,V20
 T30|.|pilot #18 Nobody's Answering (selector mismatch)|T19,T20,T22,V20,V21
