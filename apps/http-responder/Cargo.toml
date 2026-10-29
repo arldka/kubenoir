@@ -1,0 +1,11 @@
+[package]
+name = "http-responder"
+version = "0.1.0"
+description = "A small HTTP service: answers / with a banner and /healthz with ok"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+kit.workspace = true
+serde.workspace = true

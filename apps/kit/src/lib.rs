@@ -63,3 +63,72 @@ pub fn serve_forever() -> ! {
         sleep(3600);
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "detective")]
+extern "C" {
+    #[link_name = "listen"]
+    fn host_listen(port: i32);
+}
+
+/// Declare the port this process accepts connections on. Nothing is bound: the engine's
+/// connectivity oracle uses the declaration to tell a refused connection from an accepted one.
+pub fn listen(port: u16) {
+    #[cfg(target_arch = "wasm32")]
+    // SAFETY: the host function only records the number.
+    unsafe {
+        host_listen(i32::from(port));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = port;
+}
+
+/// A request to a server app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub method: String,
+    pub path: String,
+}
+
+/// What a server app answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Response {
+    pub status: u16,
+    pub body: String,
+}
+
+impl Response {
+    pub fn new(status: u16, body: &str) -> Self {
+        Response {
+            status,
+            body: body.to_string(),
+        }
+    }
+}
+
+/// Run as a server on `port`. Started normally, the process declares the port and serves until
+/// killed. Asked to answer a request (the engine runs the same program again with
+/// `request <method> <path>` after the config), it prints `status: <code>` and the body from
+/// `handler`, and exits.
+pub fn serve(port: u16, handler: impl Fn(&Request) -> Response) -> ! {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(2).map(String::as_str) == Some("request") {
+        let request = Request {
+            method: args.get(3).cloned().unwrap_or_else(|| "GET".into()),
+            path: args.get(4).cloned().unwrap_or_else(|| "/".into()),
+        };
+        let response = handler(&request);
+        println!("status: {}", response.status);
+        if !response.body.is_empty() {
+            println!("{}", response.body);
+        }
+        std::process::exit(0)
+    }
+    listen(port);
+    serve_forever()
+}
+
+/// Whether the engine started this run to answer a request rather than to be a container.
+pub fn answering_request() -> bool {
+    std::env::args().nth(2).as_deref() == Some("request")
+}

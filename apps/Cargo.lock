@@ -11,6 +11,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-responder"
+version = "0.1.0"
+dependencies = [
+ "kit",
+ "serde",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

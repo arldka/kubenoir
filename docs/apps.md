@@ -77,6 +77,13 @@ never fall back to defaults, so exactly one URL works.
 
 A healthy nginx. It prints its start-up lines and serves forever. It takes no config.
 
+### `http-responder`
+
+A small web service. It logs `<name> <version> starting (pid 1)`, then `listening on :<port>`, and
+serves: `/` answers its banner, `/healthz` answers `ok`, anything else 404. The port is the
+environment variable named by `portEnv` (default `defaultPort`, 8080); a value that is not a number
+makes it exit 1. Config: `name`, `version`, `portEnv`, `defaultPort`.
+
 ### `watcher`
 
 A service configured by files. At start it reads each file in `WATCH_FILES` (comma-separated
@@ -102,6 +109,15 @@ Fixed output that ignores the environment. Use it for batch jobs, sidecars and f
 
 Lines are printed at their `at` second (equal times keep their order). Without `exit` the process
 keeps running.
+
+## Servers
+
+A server app calls `kit::serve(port, handler)`. Nothing is bound and no socket exists: the call
+declares the port to the engine (`Program.listens`, the host import `detective.listen`), which
+uses it to tell an accepted connection from a refused one. When something connects, the engine runs
+the same program again with `request <method> <path>` after the config; `serve` then prints
+`status: <code>` and the body from the handler, and exits. So the answer comes from the app's code
+and its environment, never from a table in the scenario.
 
 ## Adding a template
 

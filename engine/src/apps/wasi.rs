@@ -50,6 +50,8 @@ pub struct Process {
     /// Complete lines with the second (since start) they were written.
     pub lines: Vec<(i64, String)>,
     rng: u64,
+    /// Ports the app declared it listens on, with the second it did.
+    pub listens: Vec<(i64, u16)>,
     /// The container's volumes.
     pub fs: Fs,
 }
@@ -83,6 +85,7 @@ impl Process {
             elapsed: 0,
             pending: [Vec::new(), Vec::new()],
             lines: Vec::new(),
+            listens: Vec::new(),
             // xorshift needs a non-zero state.
             rng: seed | 1,
         }
@@ -228,6 +231,15 @@ const IMPLEMENTED: &[&str] = &[
 /// with `ENOSYS`, so a template linking more of libstd than it uses still instantiates.
 pub fn linker(module: &Module) -> Result<Linker<Process>, Error> {
     let mut linker = Linker::new(module.engine());
+
+    // The one call that is not WASI: an app says which port it accepts connections on. Nothing
+    // is bound; the oracle uses the declaration (C6).
+    linker.func_wrap("detective", "listen", |mut c: Ctx<'_>, port: i32| {
+        if let Ok(port) = u16::try_from(port) {
+            let at = c.data().elapsed_secs();
+            c.data_mut().listens.push((at, port));
+        }
+    })?;
 
     linker.func_wrap(MODULE, "args_sizes_get", |mut c: Ctx<'_>, count: i32, size: i32| {
         let args = std::mem::take(&mut c.data_mut().args);

@@ -38,6 +38,18 @@ pub struct Program {
     /// The files the run wrote or removed, stamped with the second (epoch) it did.
     #[serde(default)]
     pub writes: Vec<VolEvent>,
+    /// `(offset, port)` for every port the app declared it listens on.
+    #[serde(default)]
+    pub listens: Vec<(i64, u16)>,
+}
+
+/// What a listening app answers to one request.
+// Nothing asks yet: `kubectl exec … curl` (T22) will.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Response {
+    pub status: u16,
+    pub body: String,
 }
 
 /// One container start.
@@ -77,6 +89,50 @@ pub fn run(apps: &AppSet, spec: Option<&ImageSpec>, launch: &Launch<'_>) -> Prog
         spec.config.to_string()
     };
     execute(module, vec![launch.image.to_string(), config], launch)
+}
+
+#[allow(dead_code)]
+/// Ask the image's app to answer one request, as a fresh run of the same program in request mode
+/// (`argv[2] == "request"`, then the method and path). The handler prints `status: <code>` and
+/// then the body. An app that is not a server, or one that dies on the request, gives a 500.
+pub fn request(apps: &AppSet, spec: Option<&ImageSpec>, launch: &Launch<'_>, method: &str, path: &str) -> Response {
+    let failed = |body: &str| Response {
+        status: 500,
+        body: body.to_string(),
+    };
+    let Some(spec) = spec else {
+        return failed("no handler");
+    };
+    let Some(module) = spec.app.as_deref().and_then(|app| apps.get(app)) else {
+        return failed("no handler");
+    };
+    let config = if spec.config.is_null() {
+        "{}".to_string()
+    } else {
+        spec.config.to_string()
+    };
+    let args = vec![
+        launch.image.to_string(),
+        config,
+        "request".to_string(),
+        method.to_string(),
+        path.to_string(),
+    ];
+    let program = execute(module, args, launch);
+    // The app's start-up output comes first; the answer starts at the `status:` line.
+    let lines: Vec<&str> = program.lines.iter().map(|(_, l)| l.as_str()).collect();
+    let answer = lines.iter().position(|l| l.starts_with("status: "));
+    let status = match (program.exit, answer) {
+        (Some((_, 0)), Some(at)) => lines[at]["status: ".len()..].parse().ok(),
+        _ => None,
+    };
+    match status {
+        Some(status) => Response {
+            status,
+            body: lines[answer.unwrap_or(0) + 1..].join("\n"),
+        },
+        None => failed("the handler did not answer"),
+    }
 }
 
 /// Run `module` from `_start` to its exit, or until it is clearly running for good.
@@ -120,6 +176,7 @@ fn execute(module: &Module, args: Vec<String>, launch: &Launch<'_>) -> Program {
         lines: std::mem::take(&mut process.lines),
         exit: code.map(|code| (process.elapsed_secs(), code)),
         writes: std::mem::take(&mut process.fs.writes),
+        listens: std::mem::take(&mut process.listens),
     }
 }
 
@@ -575,5 +632,84 @@ mod tests {
     fn runs_are_deterministic() {
         let env = [("DATABASE_URL", "postgres://x")];
         assert_eq!(launch(&db_client(), &env), launch(&db_client(), &env));
+    }
+}
+
+#[cfg(test)]
+mod server_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn responder() -> ImageSpec {
+        ImageSpec {
+            app: Some("http-responder@0.1.0".into()),
+            config: json!({"name": "informant", "version": "1.2", "portEnv": "PORT"}),
+            ..ImageSpec::default()
+        }
+    }
+
+    fn launch<'a>(env: &'a BTreeMap<String, String>) -> Launch<'a> {
+        Launch {
+            image: "informant:1",
+            env,
+            started_at: 1_000,
+            seed: 1,
+            mounts: &[],
+            timeline: &NO_TIMELINE,
+        }
+    }
+
+    fn env(port: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([("PORT".to_string(), port.to_string())])
+    }
+
+    #[test]
+    fn a_server_declares_the_port_it_listens_on() {
+        let env = env("3000");
+        let program = run(&AppSet::bundled(), Some(&responder()), &launch(&env));
+        assert_eq!(program.listens, [(1, 3000)]);
+        assert_eq!(program.exit, None);
+        assert_eq!(program.lines.last().unwrap().1, "INFO  listening on :3000");
+    }
+
+    #[test]
+    fn a_server_that_cannot_start_declares_nothing() {
+        let env = env("eighty");
+        let program = run(&AppSet::bundled(), Some(&responder()), &launch(&env));
+        assert!(program.listens.is_empty());
+        assert_eq!(program.exit, Some((0, 1)));
+    }
+
+    #[test]
+    fn requests_are_answered_by_the_app_itself() {
+        let apps = AppSet::bundled();
+        let env = env("3000");
+        let ask = |path| request(&apps, Some(&responder()), &launch(&env), "GET", path);
+        assert_eq!(
+            ask("/"),
+            Response {
+                status: 200,
+                body: "informant 1.2".into()
+            }
+        );
+        assert_eq!(
+            ask("/healthz"),
+            Response {
+                status: 200,
+                body: "ok".into()
+            }
+        );
+        assert_eq!(ask("/nope").status, 404);
+    }
+
+    #[test]
+    fn an_app_that_is_not_a_server_does_not_answer() {
+        let apps = AppSet::bundled();
+        let env = BTreeMap::new();
+        let spec = ImageSpec {
+            app: Some("nginx@0.1.0".into()),
+            ..ImageSpec::default()
+        };
+        assert_eq!(request(&apps, Some(&spec), &launch(&env), "GET", "/").status, 500);
     }
 }
