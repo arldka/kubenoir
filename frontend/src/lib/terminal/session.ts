@@ -2,10 +2,13 @@ import { BUILTINS, runBuiltin } from './builtins';
 import type { History } from './history';
 import { LineEditor, type Completion } from './lineEditor';
 import { parseKeys, type Key } from './keys';
+import { Vim } from './vim';
 import { columns, layoutFor, render, toNextLine, visibleLength, type Layout } from './screen';
 
 const CLEAR_SCREEN = '\x1b[2J\x1b[3J\x1b[H';
 const BELL = '\x07';
+const ALT_SCREEN_ON = '\x1b[?1049h';
+const ALT_SCREEN_OFF = '\x1b[?1049l';
 /** Amber user, brass host, like a worn terminal label. */
 const DEFAULT_PROMPT = '\x1b[38;5;179mdetective\x1b[0m@\x1b[38;5;137mcluster\x1b[0m:~$ ';
 
@@ -14,7 +17,14 @@ export interface SessionOptions {
 	write(data: string): void;
 	/** Current terminal width in columns. */
 	cols(): number;
+	/** Current terminal height in rows (for the editor); defaults to 24. */
+	rows?(): number;
 	evalCommand(command: string): Promise<string>;
+	/** The file `vim` asked to open, once. */
+	takeEditorRequest?(): string | undefined;
+	readFile?(path: string): string | undefined;
+	/** The editor saved the file. */
+	writeFile?(path: string, text: string): void;
 	complete(linePrefix: string): Completion | Promise<Completion>;
 	history: History;
 	/**
@@ -40,6 +50,8 @@ export class TerminalSession {
 	private layout: Layout | null = null;
 	/** Input is handled strictly in order, even while a command is still running. */
 	private queue: Promise<void> = Promise.resolve();
+	/** The editor that has the whole screen, while there is one. */
+	private editing: { vim: Vim; path: string } | null = null;
 
 	constructor(private readonly options: SessionOptions) {
 		this.editor = new LineEditor(options.history);
@@ -59,6 +71,7 @@ export class TerminalSession {
 
 	/** The terminal changed size: redraw the input line for the new width. */
 	resize(): void {
+		if (this.editing) return this.drawEditor(true);
 		if (!this.layout) return;
 		const layout = layoutFor(visibleLength(this.prompt), this.editor.buffer.length, this.editor.cursor, this.options.cols());
 		this.layout = { ...layout, cursorRow: this.options.rowsAboveCursor?.() ?? layout.cursorRow };
@@ -66,7 +79,15 @@ export class TerminalSession {
 	}
 
 	private async handleData(data: string): Promise<void> {
-		for (const key of parseKeys(data)) await this.handleKey(key);
+		if (this.editing) {
+			for (const key of parseKeys(data, true)) this.handleEditorKey(key);
+			return;
+		}
+		for (const key of parseKeys(data)) {
+			await this.handleKey(key);
+			// What is left of a paste belongs to the editor the command just opened.
+			if (this.editing) break;
+		}
 	}
 
 	private async handleKey(key: Key): Promise<void> {
@@ -93,7 +114,7 @@ export class TerminalSession {
 			this.options.history.add(command);
 			await this.run(command);
 		}
-		this.newLine();
+		if (!this.editing) this.newLine();
 	}
 
 	private async run(command: string): Promise<void> {
@@ -108,6 +129,60 @@ export class TerminalSession {
 		} catch (e) {
 			this.print(`error: ${e instanceof Error ? e.message : String(e)}`);
 		}
+		const file = this.options.takeEditorRequest?.();
+		if (file !== undefined) this.openEditor(file);
+	}
+
+	// ---- the editor ----------------------------------------------------------------------------
+
+	private openEditor(path: string): void {
+		const text = this.options.readFile?.(path);
+		const vim = new Vim(text ?? '', {
+			name: path,
+			rows: this.options.rows?.() ?? 24,
+			cols: this.options.cols(),
+			isNew: text === undefined
+		});
+		this.editing = { vim, path };
+		this.options.write(ALT_SCREEN_ON);
+		this.drawEditor();
+	}
+
+	private handleEditorKey(key: Key): void {
+		const editing = this.editing;
+		if (!editing) return;
+		this.options.onKey?.(key);
+		const result = editing.vim.handle(key);
+		if (result.save !== undefined) this.options.writeFile?.(editing.path, result.save);
+		if (result.quit) return this.closeEditor();
+		if (result.bell) this.options.write(BELL);
+		if (result.redraw) this.drawEditor();
+	}
+
+	private closeEditor(): void {
+		this.editing = null;
+		this.options.write(ALT_SCREEN_OFF);
+		this.newLine();
+	}
+
+	/** Paint the whole editor: text rows, the status line in reverse video, then the cursor. */
+	private drawEditor(clear = false): void {
+		const editing = this.editing;
+		if (!editing) return;
+		const cols = this.options.cols();
+		const rows = this.options.rows?.() ?? 24;
+		editing.vim.resize(rows, cols);
+		const screen = editing.vim.screen();
+		// After a resize the old rows may have been cut or re-flowed: start from a clean screen.
+		let out = (clear ? '\x1b[2J' : '') + '\x1b[?25l';
+		screen.rows.forEach((row, i) => {
+			const shown = row === '~' ? '\x1b[38;5;66m~\x1b[0m' : row;
+			out += `\x1b[${i + 1};1H\x1b[2K${shown}`;
+		});
+		const status = screen.status.padEnd(Math.max(0, cols - 1));
+		out += `\x1b[${rows};1H\x1b[2K\x1b[7m${status}\x1b[0m`;
+		out += `\x1b[${screen.cursor.row + 1};${screen.cursor.col + 1}H\x1b[?25h`;
+		this.options.write(out);
 	}
 
 	private async complete(): Promise<void> {

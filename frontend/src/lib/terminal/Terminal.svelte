@@ -5,7 +5,7 @@
 	import '@xterm/xterm/css/xterm.css';
 
 	import { getSoundscape, soundForKey } from '../audio/index.js';
-	import { complete, evalCommand } from '../engine.js';
+	import { complete, evalCommand, readFile, takeEditorRequest, writeFile } from '../engine.js';
 	import { banner as makeBanner } from './builtins.js';
 	import { History } from './history.js';
 	import { TerminalSession } from './session.js';
@@ -72,7 +72,11 @@
 			const session = new TerminalSession({
 				write: (data) => t.write(data),
 				cols: () => t.cols,
+				rows: () => t.rows,
 				evalCommand,
+				takeEditorRequest,
+				readFile,
+				writeFile,
 				complete,
 				history: new History(`k8sd:history:${scenarioId}`),
 				rowsAboveCursor: () => rowsAboveCursor(t),

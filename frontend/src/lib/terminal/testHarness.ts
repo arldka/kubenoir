@@ -16,6 +16,8 @@ export interface HarnessOptions {
 	banner?: string;
 	prompt?: string;
 	onKey?: (key: Key) => void;
+	/** The terminal's own files; `vim FILE` opens the editor on them, saving writes them back. */
+	files?: Record<string, string>;
 }
 
 /** Rows between the cursor and the start of its (possibly wrapped) logical line. */
@@ -39,11 +41,26 @@ export function createHarness(options: HarnessOptions = {}) {
 	for (const entry of options.history ?? []) history.add(entry);
 
 	const commands = options.commands ?? {};
+	const files: Record<string, string> = { ...(options.files ?? {}) };
+	let editorRequest: string | undefined;
 	const session = new TerminalSession({
 		write: (data) => void pending.push(new Promise<void>((resolve) => term.write(data, resolve))),
 		cols: () => term.cols,
+		rows: () => term.rows,
+		takeEditorRequest: () => {
+			const path = editorRequest;
+			editorRequest = undefined;
+			return path;
+		},
+		readFile: (path) => files[path],
+		writeFile: (path, text) => void (files[path] = text),
 		evalCommand: async (command) => {
 			evaluated.push(command);
+			const vim = /^vim? (\S+)$/.exec(command);
+			if (vim) {
+				editorRequest = vim[1];
+				return '';
+			}
 			return typeof commands === 'function' ? commands(command) : (commands[command] ?? 'error: unknown');
 		},
 		complete: options.completions ?? (() => ({ start: 0, candidates: [] })),
@@ -58,12 +75,12 @@ export function createHarness(options: HarnessOptions = {}) {
 		while (pending.length) await pending.shift();
 	};
 
-	const buffer = term.buffer.active;
 	return {
 		term,
 		session,
 		history,
 		evaluated,
+		files,
 		async start() {
 			session.start();
 			await settle();
@@ -79,12 +96,15 @@ export function createHarness(options: HarnessOptions = {}) {
 		},
 		/** Every screen row with trailing blanks trimmed, ignoring empty rows at the end. */
 		lines(): string[] {
+			const buffer = term.buffer.active;
 			const rows: string[] = [];
 			for (let i = 0; i < buffer.length; i++) rows.push((buffer.getLine(i)?.translateToString(true) ?? '').trimEnd());
 			while (rows.length && rows[rows.length - 1] === '') rows.pop();
 			return rows;
 		},
-		cursor: () => ({ x: buffer.cursorX, y: buffer.cursorY })
+		cursor: () => ({ x: term.buffer.active.cursorX, y: term.buffer.active.cursorY }),
+		/** Whether the alternate screen (the editor) is showing. */
+		inEditor: () => term.buffer.active.type === 'alternate'
 	};
 }
 
@@ -107,6 +127,9 @@ export const KEY = {
 	ctrlL: '\x0c',
 	ctrlU: '\x15',
 	ctrlW: '\x17',
+	ctrlR: '\x12',
+	ctrlZ: '\x1a',
+	escape: '\x1b',
 	ctrlLeft: '\x1b[1;5D',
 	ctrlRight: '\x1b[1;5C'
 };

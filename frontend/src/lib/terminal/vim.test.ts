@@ -44,7 +44,7 @@ describe('opening', () => {
 		expect(rows.slice(0, 4)).toEqual(['one', 'two', '~', '~']);
 		expect(rows).toHaveLength(9);
 		expect(status.endsWith('pod.yaml  1,1')).toBe(true);
-		expect(status).toHaveLength(80);
+		expect(status).toHaveLength(79);
 	});
 });
 

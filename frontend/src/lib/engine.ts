@@ -25,6 +25,7 @@ export const simTime: Readable<string | null> = { subscribe: clock.subscribe };
 export type TranscriptEntry =
 	| { kind: 'eval'; command: string }
 	| { kind: 'advance'; seconds: number }
+	| { kind: 'write'; path: string; text: string }
 	| { kind: 'hint'; index: number };
 
 /** How the case stands (findings so far, and the verdict once it is solved). */
@@ -108,6 +109,23 @@ export async function evalCommand(cmd: string): Promise<string> {
 	const output = current.eval(cmd);
 	refreshStatus();
 	return output;
+}
+
+/** The file `vim` was asked to open by the last command, once; undefined if it did not. */
+export function takeEditorRequest(): string | undefined {
+	return current?.takeEditorRequest() ?? undefined;
+}
+
+/** The text of one of the terminal's files, or undefined if there is no such file. */
+export function readFile(path: string): string | undefined {
+	return current?.readFile(path) ?? undefined;
+}
+
+/** The editor saved `text` to `path`: part of the session, since `kubectl apply -f` reads it. */
+export function writeFile(path: string, text: string): void {
+	if (!current) return;
+	transcript.push({ kind: 'write', path, text });
+	current.writeFile(path, text);
 }
 
 /** What could complete the last word of `linePrefix`; empty if there is no cluster or no match. */

@@ -730,8 +730,10 @@ export class Vim {
 		else left = this.pendingText();
 		const right = `${this.options.name}${flag}  ${where}`;
 		// A message takes the whole line when it needs it, like vim's own.
-		const gap = width - left.length - right.length;
-		const status = gap >= 1 ? left + ' '.repeat(gap) + right : left.slice(0, width);
+		// One column short of the terminal's width: writing the last one would wait to wrap.
+		const room = width - 1;
+		const gap = room - left.length - right.length;
+		const status = gap >= 1 ? left + ' '.repeat(gap) + right : left.slice(0, room);
 		const cursor =
 			this.mode === 'ex'
 				? { row: height, col: Math.min(width - 1, 1 + this.ex.length) }

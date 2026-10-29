@@ -243,3 +243,47 @@ test('an unknown case says what could not be found', async ({ page }) => {
 	await expect(page.getByRole('alert')).toContainText('Case "no-such-case" could not be fetched');
 	await expect(page.getByRole('alert')).toContainText('/registry/scenarios/no-such-case/scenario.json (404)');
 });
+
+test('a manifest written with vim is saved to the terminal and applied', async ({ page }) => {
+	const problems = await openCase(page);
+	await run(page, 'vim note.yaml');
+	await expect(screen(page)).toContainText('"note.yaml" [New]');
+
+	await page.keyboard.press('i');
+	for (const line of ['apiVersion: v1', 'kind: ConfigMap', 'metadata: {name: note}', 'data: {k: v}']) {
+		await page.keyboard.type(line);
+		await page.keyboard.press('Enter');
+	}
+	await page.keyboard.press('Escape');
+	await expect(screen(page)).toContainText('note.yaml [+]');
+	await page.keyboard.type(':wq');
+	await page.keyboard.press('Enter');
+
+	// Back at the prompt, with the file there for the commands that read files.
+	await run(page, 'cat note.yaml');
+	await expect(screen(page)).toContainText('kind: ConfigMap');
+	await run(page, 'kubectl apply -f note.yaml');
+	await expect(screen(page)).toContainText('configmap/note created');
+	expect(problems).toEqual([]);
+});
+
+test('failing to leave vim three times is scolded; :q! gets out', async ({ page }) => {
+	await openCase(page);
+	await run(page, 'vim scratch.yaml');
+	await page.keyboard.press('i');
+	await page.keyboard.type('oops');
+	await page.keyboard.press('Escape');
+
+	await page.keyboard.type(':q');
+	await page.keyboard.press('Enter');
+	await expect(screen(page)).toContainText('E37: No write since last change (add ! to override)');
+	await page.keyboard.press('Control+c');
+	await page.keyboard.press('Control+z');
+	await expect(screen(page)).toContainText("I knew you were a rookie but I didn't know you were this incapable");
+
+	await page.keyboard.type(':q!');
+	await page.keyboard.press('Enter');
+	await expect(screen(page)).not.toContainText('rookie');
+	await run(page, 'cat scratch.yaml');
+	await expect(screen(page)).toContainText('cat: scratch.yaml: No such file or directory');
+});

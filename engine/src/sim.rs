@@ -36,8 +36,17 @@ pub struct Engine {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Step {
-    Eval { command: String },
-    Advance { seconds: u32 },
+    Eval {
+        command: String,
+    },
+    Advance {
+        seconds: u32,
+    },
+    /// The editor saved a file (what `vim` did in the terminal).
+    Write {
+        path: String,
+        text: String,
+    },
     Hint {},
 }
 
@@ -79,6 +88,7 @@ impl Engine {
                     engine.eval(command);
                 }
                 Step::Advance { seconds } => engine.advance(*seconds),
+                Step::Write { path, text } => engine.write_file(path, text),
                 Step::Hint {} => {}
             }
         }

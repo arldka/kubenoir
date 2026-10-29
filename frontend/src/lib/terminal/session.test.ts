@@ -291,3 +291,82 @@ describe('TerminalSession key reporting', () => {
 		expect(seen).toEqual(['char', 'enter', 'char']);
 	});
 });
+
+describe('TerminalSession editor', () => {
+	const open = async (files: Record<string, string> = {}) => {
+		const t = createHarness({ cols: 80, files, prompt: '$ ' });
+		await t.start();
+		await t.type('vim pod.yaml' + KEY.enter);
+		return t;
+	};
+
+	it('takes the whole screen for vim and gives the prompt back when it quits', async () => {
+		const t = await open({ 'pod.yaml': 'kind: Pod\nname: x\n' });
+		expect(t.inEditor()).toBe(true);
+		const lines = t.lines();
+		expect(lines.slice(0, 2)).toEqual(['kind: Pod', 'name: x']);
+		expect(lines[2]).toBe('~');
+		expect(lines.at(-1)).toMatch(/^"pod.yaml" 2L, 18B\s+pod.yaml {2}1,1$/);
+		expect(t.cursor()).toEqual({ x: 0, y: 0 });
+		await t.type(':q' + KEY.enter);
+		expect(t.inEditor()).toBe(false);
+		expect(t.lines().at(-1)).toBe('$');
+		// The command that opened it is back in the scrollback, with the prompt below it.
+		expect(t.lines()).toContain('$ vim pod.yaml');
+	});
+
+	it('edits, shows [+], saves to the terminal file and leaves', async () => {
+		const t = await open({ 'pod.yaml': 'kind: Pod\n' });
+		await t.type('A: v1' + KEY.escape);
+		expect(t.lines().at(-1)).toMatch(/pod.yaml \[\+\] {2}1,/);
+		await t.type(':w' + KEY.enter);
+		expect(t.files['pod.yaml']).toBe('kind: Pod: v1\n');
+		expect(t.lines().at(-1)).toMatch(/^"pod.yaml" 1L, 14B written/);
+		await t.type(':q' + KEY.enter);
+		expect(t.inEditor()).toBe(false);
+	});
+
+	it('creates a file that did not exist only when it is saved', async () => {
+		const t = await open();
+		expect(t.lines().at(-1)).toMatch(/^"pod.yaml" \[New\]/);
+		await t.type('ikind: Pod' + KEY.escape + ':wq' + KEY.enter);
+		expect(t.files['pod.yaml']).toBe('kind: Pod\n');
+		expect(t.inEditor()).toBe(false);
+		const quit = await open();
+		await quit.type('ix' + KEY.escape + ':q!' + KEY.enter);
+		expect(quit.files['pod.yaml']).toBeUndefined();
+	});
+
+	it('refuses to leave with unsaved changes, and scolds the third failed attempt', async () => {
+		const t = await open({ 'pod.yaml': 'a\n' });
+		await t.type('xi' + KEY.escape);
+		await t.type(':q' + KEY.enter);
+		expect(t.inEditor()).toBe(true);
+		expect(t.lines().at(-1)).toContain('E37: No write since last change (add ! to override)');
+		await t.type(KEY.ctrlC);
+		expect(t.inEditor()).toBe(true);
+		await t.type(KEY.ctrlZ);
+		expect(t.inEditor()).toBe(true);
+		expect(t.lines().at(-1)).toContain("I knew you were a rookie but I didn't know you were this incapable");
+		await t.type(':q!' + KEY.enter);
+		expect(t.inEditor()).toBe(false);
+		expect(t.files['pod.yaml']).toBe('a\n');
+	});
+
+	it('shows what it does not understand on the status line', async () => {
+		const t = await open({ 'pod.yaml': 'a\n' });
+		await t.type(':set number' + KEY.enter);
+		expect(t.lines().at(-1)).toContain('E492: Not an editor command: set number');
+		await t.type('Z');
+		expect(t.lines().at(-1)).toContain('E492: Not an editor command: Z');
+	});
+
+	it('redraws for the new size when the window changes', async () => {
+		const t = await open({ 'pod.yaml': 'a\n' });
+		await t.resize(70);
+		expect(t.inEditor()).toBe(true);
+		expect(t.lines().at(-1)).toMatch(/pod.yaml {2}1,1$/);
+		await t.type(':q' + KEY.enter);
+		expect(t.lines().at(-1)).toBe('$');
+	});
+});
