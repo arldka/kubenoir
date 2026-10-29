@@ -19,7 +19,7 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - C9: kustomize/helm ⊥ scope (no `apply -k`, no `helm`); unsupported → V5 error.
 - C10: `make ci` green ∀ task.
 - C11: scenario JSON = story & rules only (`id`, `title`, `briefing`, `objective`, `hints`, `success`, `findings`, `images`, clock). ∀ k8s objects (Nodes incl.) ∈ YAML files it references; ⊥ k8s objects inline in JSON.
-- C12: `kubectl edit` ⊥ scope (change state by editing a file & `kubectl apply|replace`); terminal ships a small `vim` for the terminal's own files instead.
+- C12: `kubectl edit` ⊥ scope (change state by editing a file & `kubectl apply|replace`) → the boss scolds (V28), ⊥ "not available"; terminal ships a small `vim` for the terminal's own files instead.
 
 ## §I interfaces
 
@@ -71,6 +71,8 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - V25: unsaved edits + `:q` → refused w/ `E37: No write since last change (add ! to override)`; `:q!` discards; modified buffer shows `[+]`.
 - V26: insert-mode Tab → 2 spaces, ⊥ `\t` (YAML); Enter, `o`, `O` keep previous line's indent.
 - V27: ∀ unsupported vim key|ex command → status-line message naming it (`E492: Not an editor command: foo`); ⊥ silent ignore, ⊥ partial effect.
+- V28: `kubectl edit` (any args, incl `--help`, `-n` before verb) → stderr `We don't do that here, we are not that kind of people.`; ⊥ `error:` prefix; ⊥ cluster|file change; ⊥ finding.
+- V29: vim failed exit attempts per session = `:q` refused (E37) + Ctrl-C + Ctrl-Z; ≥3 → status line `I knew you were a rookie but I didn't know you were this incapable` (replaces that attempt's normal message); editor stays open; `:q!`|`:wq`|`:x` still exit.
 
 ## §T tasks
 
@@ -88,8 +90,9 @@ T8|x|output fidelity: `-o yaml\|json\|name\|wide\|jsonpath`, `-l`, `-A`, golden 
 T9|x|`--help` ∀ verb + `explain` from `k8s-openapi` docs|V7
 T10|x|unsupported verb/flag/kind errors audit|V5
 T35|.|engine: `vim`\|`vi` FILE command (parse, path rules, queue editor request), `Engine.readFile`, `takeEditorRequest`; judge verb `vim` (name = path); help page|C12,V5,V27,I.shell,I.js
-T36|.|`frontend/src/lib/terminal/vim.ts`: modal editor state machine, vitest-covered: normal/insert/ex modes; h j k l w b e 0 $ gg G; i a I A o O; x dd yy p P u Ctrl-R; counts; `:w :q :wq :x :q!`; Tab→spaces, auto-indent|V24,V25,V26,V27,I.ui
-T37|.|terminal integration: full-screen render (alt screen, mode/`[+]` status line, `~` rows), key routing in `session.ts`, `:w` → `Engine.writeFile`, back to prompt on quit; e2e: edit a manifest then `kubectl apply -f` it|V24,V25,I.js
+T36|.|`frontend/src/lib/terminal/vim.ts`: modal editor state machine, vitest-covered (incl. failed-exit counter): normal/insert/ex modes; h j k l w b e 0 $ gg G; i a I A o O; x dd yy p P u Ctrl-R; counts; `:w :q :wq :x :q!`; Tab→spaces, auto-indent|V24,V25,V26,V27,V29,I.ui
+T37|.|terminal integration: full-screen render (alt screen, mode/`[+]` status line, `~` rows), key routing in `session.ts`, `:w` → `Engine.writeFile`, back to prompt on quit; e2e: edit a manifest then `kubectl apply -f` it; fail to quit 3× → scolded, then `:q!` leaves|V24,V25,V29,I.js
+T38|x|`kubectl edit` → boss's reprimand (parse error variant printed as is, stderr in pipelines)|C12,V28
 T13|.|verbs: `run`, `create namespace\|deployment\|configmap\|secret`, `set image`, `scale`, `rollout status\|history\|undo`, `label`, `expose`|I.cmd
 T14|.|Namespace kind + cluster-scoped resources + `namespaces "x" not found`|V1
 T15|.|env `valueFrom`/`envFrom` from ConfigMap/Secret at start|V12,V15

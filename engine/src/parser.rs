@@ -269,6 +269,8 @@ pub enum ParseError {
     InvalidPatchType(String),
     /// `--force` outside `replace`.
     ForceWithoutReplace,
+    /// The boss's answer to something this precinct does not do; printed as is.
+    Boss(&'static str),
     /// A failure of a built-in shell command, already worded (`ls: invalid option -- 'l'`).
     Builtin(String),
 }
@@ -339,6 +341,7 @@ impl fmt::Display for ParseError {
                 "error: --type must be one of [json merge strategic], not \"{t}\""
             ),
             ParseError::Builtin(message) => write!(f, "{message}"),
+            ParseError::Boss(message) => write!(f, "{message}"),
             ParseError::ForceWithoutReplace => write!(f, "error: unknown flag: --force"),
         }
     }
@@ -490,7 +493,6 @@ const UNSUPPORTED_VERBS: &[&str] = &[
     "debug",
     "diff",
     "drain",
-    "edit",
     "events",
     "exec",
     "expose",
@@ -511,9 +513,15 @@ const UNSUPPORTED_VERBS: &[&str] = &[
 const SET_UNSUPPORTED: &[&str] = &["image", "resources", "selector", "serviceaccount", "subject"];
 const ROLLOUT_UNSUPPORTED: &[&str] = &["history", "pause", "resume", "status", "undo"];
 
+/// What the boss says to anyone who reaches for `kubectl edit`: state is changed by writing a
+/// manifest and applying it.
+pub const NO_EDITING: &str = "We don't do that here, we are not that kind of people.";
+
 /// A verb kubectl has but we do not is "not available"; anything else is just unknown.
 fn unknown_verb(verb: &str) -> ParseError {
-    if UNSUPPORTED_VERBS.contains(&verb) {
+    if verb == "edit" {
+        ParseError::Boss(NO_EDITING)
+    } else if UNSUPPORTED_VERBS.contains(&verb) {
         ParseError::Unsupported(format!("kubectl {verb}"))
     } else {
         ParseError::UnknownVerb(verb.to_string())

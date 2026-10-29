@@ -40,7 +40,6 @@ fn kubectl_commands_that_exist_but_are_not_offered_say_so() {
         "exec",
         "scale",
         "run",
-        "edit",
         "label",
         "annotate",
         "cordon",
@@ -57,6 +56,28 @@ fn kubectl_commands_that_exist_but_are_not_offered_say_so() {
             "{verb}"
         );
     }
+    // The boss answers `kubectl edit`, however it is asked, and nothing is changed.
+    for line in [
+        "kubectl edit pod x",
+        "kubectl edit",
+        "kubectl edit --help",
+        "kubectl -n x edit deploy/y",
+        "kubectl edit pod x -o yaml",
+    ] {
+        assert_eq!(
+            e.eval(line),
+            "We don't do that here, we are not that kind of people.",
+            "{line}"
+        );
+    }
+    assert_eq!(
+        e.eval("kubectl edit pod x | cat"),
+        "We don't do that here, we are not that kind of people."
+    );
+    assert_eq!(
+        e.eval("kubectl edit pod x | grep -c ."),
+        "We don't do that here, we are not that kind of people.\n0"
+    );
     // The help page of one says the same, not "unknown command".
     assert_eq!(
         e.eval("kubectl exec --help"),
