@@ -536,12 +536,17 @@ pub(crate) fn is_error_output(output: &str) -> bool {
 
 // ---- the judge ------------------------------------------------------------------------------
 
+/// Every case gets the same time: fifteen minutes of cluster time from the player's start.
+pub const TIME_LIMIT_SECS: i64 = 15 * 60;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// Solved without breaking any constraint.
     Closed,
     /// Solved, but something that should have been left alone was not.
     ClosedWithCost,
+    /// The time ran out with the case unsolved.
+    TimeUp,
 }
 
 #[derive(Debug, Clone)]
@@ -557,6 +562,8 @@ pub struct Judge {
     found: Vec<(usize, i64)>,
     commands: u32,
     solved: Option<(Outcome, i64)>,
+    /// Which assertions held when the time ran out.
+    held_at_limit: Vec<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -605,6 +612,9 @@ pub struct Status {
     pub outcome: Option<&'static str>,
     pub solved_at_seconds: Option<i64>,
     pub elapsed_seconds: i64,
+    /// The time every case gets, and how much of it the player has left.
+    pub time_limit_seconds: i64,
+    pub seconds_left: i64,
     pub commands: u32,
     pub findings: FindingsStatus,
     pub report: Option<Report>,
@@ -620,6 +630,7 @@ impl Judge {
             found: Vec::new(),
             commands: 0,
             solved: None,
+            held_at_limit: Vec::new(),
         }
     }
 
@@ -634,9 +645,25 @@ impl Judge {
 
     /// Look at the cluster at `now`. Call after every change (each reconcile, each command).
     pub fn observe(&mut self, store: &ClusterStore, now: i64) {
-        if self.started_at.is_none() || self.solved.is_some() {
+        let Some(started) = self.started_at else { return };
+        if self.solved.is_some() {
             return;
         }
+        self.observe_rules(store, now);
+        // Solved in time wins; otherwise the clock runs out.
+        if self.solved.is_none() && now - started >= TIME_LIMIT_SECS {
+            self.held_at_limit = self
+                .rules
+                .success
+                .iter()
+                .flat_map(|s| s.assertions.iter())
+                .map(|rule| holds(rule, store, 1).unwrap_or(false))
+                .collect();
+            self.solved = Some((Outcome::TimeUp, started + TIME_LIMIT_SECS));
+        }
+    }
+
+    fn observe_rules(&mut self, store: &ClusterStore, now: i64) {
         let Some(success) = self.rules.success.as_ref() else {
             return;
         };
@@ -668,11 +695,18 @@ impl Judge {
 
     /// When the judge next needs the clock to stop: the moment the stability window completes.
     pub fn next_wake(&self) -> Option<i64> {
-        let success = self.rules.success.as_ref()?;
-        match (self.started_at, self.solved, self.holding_since) {
-            (Some(_), None, Some(since)) => Some(since + success.stable_seconds),
-            _ => None,
+        let started = self.started_at?;
+        if self.solved.is_some() {
+            return None;
         }
+        let limit = started + TIME_LIMIT_SECS;
+        let stable = self
+            .rules
+            .success
+            .as_ref()
+            .zip(self.holding_since)
+            .map(|(success, since)| since + success.stable_seconds);
+        Some(stable.map_or(limit, |s| s.min(limit)))
     }
 
     /// Note a command the player ran (it parsed), the objects it wrote or deleted (for commands
@@ -725,9 +759,12 @@ impl Judge {
                 .success
                 .iter()
                 .flat_map(|s| s.assertions.iter())
-                .map(|r| AssertionReport {
+                .enumerate()
+                .map(|(i, r)| AssertionReport {
                     label: r.label.clone(),
-                    ok: true,
+                    // Solved cases held all of them; a case that timed out says which did.
+                    ok: !matches!(solved, Some((Outcome::TimeUp, _)))
+                        || self.held_at_limit.get(i).copied().unwrap_or(false),
                 })
                 .collect(),
             constraints: self
@@ -755,9 +792,12 @@ impl Judge {
             outcome: solved.map(|(o, _)| match o {
                 Outcome::Closed => "closed",
                 Outcome::ClosedWithCost => "closedWithCost",
+                Outcome::TimeUp => "timeUp",
             }),
             solved_at_seconds: solved.map(|(_, at)| at - started),
             elapsed_seconds: end - started,
+            time_limit_seconds: TIME_LIMIT_SECS,
+            seconds_left: (TIME_LIMIT_SECS - (end - started)).max(0),
             commands: self.commands,
             findings: FindingsStatus {
                 total: self.rules.findings.len(),
@@ -1217,7 +1257,8 @@ mod tests {
         let mut j = judge(json!([]));
         j.observe(&pod("Pending"), 1000);
         assert!(!j.status(1000).solved);
-        assert_eq!(j.next_wake(), None);
+        // Nothing holds yet: the only thing to wait for is the end of the time.
+        assert_eq!(j.next_wake(), Some(1000 + TIME_LIMIT_SECS));
 
         let running = pod("Running");
         j.observe(&running, 1005);
@@ -1239,7 +1280,7 @@ mod tests {
         let mut j = judge(json!([]));
         j.observe(&pod("Running"), 1000);
         j.observe(&pod("Pending"), 1008);
-        assert_eq!(j.next_wake(), None);
+        assert_eq!(j.next_wake(), Some(1000 + TIME_LIMIT_SECS));
         j.observe(&pod("Running"), 1009);
         j.observe(&pod("Running"), 1018);
         assert!(!j.status(1018).solved);
@@ -1384,11 +1425,14 @@ mod tests {
     }
 
     #[test]
-    fn without_success_rules_the_case_never_closes() {
+    fn without_success_rules_only_the_clock_closes_the_case() {
         let mut j = Judge::new(Rules::default());
         j.start(0);
         j.observe(&pod("Running"), 100);
         assert!(!j.status(100).solved);
+        assert_eq!(j.next_wake(), Some(TIME_LIMIT_SECS));
+        j.observe(&pod("Running"), TIME_LIMIT_SECS);
+        assert_eq!(j.status(TIME_LIMIT_SECS).outcome, Some("timeUp"));
         assert_eq!(j.next_wake(), None);
     }
 }

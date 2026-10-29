@@ -129,7 +129,7 @@
 							Open the case report
 						</button>
 					{/if}
-					<Clock now={$simTime} since={startedAt} />
+					<Clock now={$simTime} since={startedAt} secondsLeft={$caseStatus?.secondsLeft ?? null} />
 					<Sound />
 					<Hints
 						hints={meta.hints}

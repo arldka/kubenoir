@@ -1,5 +1,9 @@
 <script lang="ts">
-	let { now, since }: { now: string | null; since: number | null } = $props();
+	let {
+		now,
+		since,
+		secondsLeft = null
+	}: { now: string | null; since: number | null; secondsLeft?: number | null } = $props();
 
 	const time = new Intl.DateTimeFormat('en-GB', {
 		timeZone: 'UTC',
@@ -16,6 +20,11 @@
 	});
 
 	const ms = $derived(now ? Date.parse(now) : null);
+	const left = $derived.by(() => {
+		if (secondsLeft === null) return '--:--';
+		const s = Math.max(0, Math.floor(secondsLeft));
+		return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+	});
 	const elapsed = $derived.by(() => {
 		if (ms === null || since === null) return '--:--:--';
 		const total = Math.max(0, Math.floor((ms - since) / 1000));
@@ -35,5 +44,14 @@
 	<div>
 		<dt class="font-typewriter text-xs tracking-widest text-ink-soft uppercase">On the case</dt>
 		<dd class="text-lg font-bold tabular-nums">{elapsed}</dd>
+	</div>
+	<div class="col-span-2">
+		<dt class="font-typewriter text-xs tracking-widest text-ink-soft uppercase">Time left on the case</dt>
+		<dd
+			class="text-lg font-bold tabular-nums {secondsLeft !== null && secondsLeft <= 60 ? 'text-stamp' : ''}"
+			data-testid="time-left"
+		>
+			{left}
+		</dd>
 	</div>
 </dl>

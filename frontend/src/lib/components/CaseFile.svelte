@@ -9,7 +9,7 @@
 		title: string;
 		briefing: string;
 		/** The verdict once the case is closed; the stamp follows it. */
-		outcome?: 'closed' | 'closedWithCost' | null;
+		outcome?: 'closed' | 'closedWithCost' | 'timeUp' | null;
 	} = $props();
 </script>
 
@@ -19,7 +19,13 @@
 			Case file No. {number}
 		</p>
 		<span class="stamp text-sm {outcome === 'closed' ? 'stamp-ok' : ''}">
-			{outcome === 'closed' ? 'Case closed' : outcome === 'closedWithCost' ? 'Closed at a cost' : 'Open case'}
+			{outcome === 'closed'
+				? 'Case closed'
+				: outcome === 'closedWithCost'
+					? 'Closed at a cost'
+					: outcome === 'timeUp'
+						? "Time's up"
+						: 'Open case'}
 		</span>
 	</div>
 	<h1 class="mt-2 font-typewriter text-2xl leading-tight">{title}</h1>

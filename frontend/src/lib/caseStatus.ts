@@ -14,9 +14,13 @@ export interface Report {
 
 export interface CaseStatus {
 	solved: boolean;
-	outcome: 'closed' | 'closedWithCost' | null;
+	/** `timeUp` is the case closing unsolved when the fixed time ran out. */
+	outcome: 'closed' | 'closedWithCost' | 'timeUp' | null;
 	solvedAtSeconds: number | null;
 	elapsedSeconds: number;
+	/** The time every case gets, and what is left of it. */
+	timeLimitSeconds: number;
+	secondsLeft: number;
 	commands: number;
 	findings: { total: number; found: FoundFinding[] };
 	/** Present only once the case is closed. */
@@ -38,7 +42,15 @@ export function parseStatus(raw: string): CaseStatus | null {
 	}
 	if (!isObj(data) || typeof data.solved !== 'boolean') return null;
 	if (!isNum(data.elapsedSeconds) || !isNum(data.commands)) return null;
-	if (data.outcome !== null && data.outcome !== 'closed' && data.outcome !== 'closedWithCost') return null;
+	if (!isNum(data.timeLimitSeconds) || !isNum(data.secondsLeft)) return null;
+	if (
+		data.outcome !== null &&
+		data.outcome !== 'closed' &&
+		data.outcome !== 'closedWithCost' &&
+		data.outcome !== 'timeUp'
+	) {
+		return null;
+	}
 	if (!(data.solvedAtSeconds === null || isNum(data.solvedAtSeconds))) return null;
 
 	const findings = data.findings;
@@ -74,6 +86,8 @@ export function parseStatus(raw: string): CaseStatus | null {
 		outcome: data.outcome,
 		solvedAtSeconds: data.solvedAtSeconds,
 		elapsedSeconds: data.elapsedSeconds,
+		timeLimitSeconds: data.timeLimitSeconds,
+		secondsLeft: data.secondsLeft,
 		commands: data.commands,
 		findings: { total: findings.total, found },
 		report

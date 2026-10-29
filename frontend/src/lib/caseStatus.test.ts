@@ -7,6 +7,8 @@ const open = {
 	outcome: null,
 	solvedAtSeconds: null,
 	elapsedSeconds: 12,
+	timeLimitSeconds: 900,
+	secondsLeft: 888,
 	commands: 2,
 	findings: { total: 3, found: [{ id: 'logs', clue: 'c', atSeconds: 5 }] },
 	report: null
@@ -38,6 +40,26 @@ describe('parseStatus', () => {
 		expect(s.solvedAtSeconds).toBe(21);
 		expect(s.report?.constraints[0]).toEqual({ label: 'c', ok: false, brokenAtSeconds: 3 });
 		expect(s.report?.missedFindings).toEqual(['unseen clue']);
+	});
+
+	it('reads the time limit, what is left of it, and a case that ran out of time', () => {
+		const s = parseStatus(JSON.stringify(open))!;
+		expect([s.timeLimitSeconds, s.secondsLeft]).toEqual([900, 888]);
+		const late = parseStatus(
+			JSON.stringify({
+				...open,
+				solved: true,
+				outcome: 'timeUp',
+				solvedAtSeconds: 900,
+				elapsedSeconds: 900,
+				secondsLeft: 0,
+				report: { assertions: [{ label: 'a', ok: false }], constraints: [], missedFindings: [] }
+			})
+		)!;
+		expect(late.outcome).toBe('timeUp');
+		expect(late.report?.assertions[0].ok).toBe(false);
+		expect(parseStatus(JSON.stringify({ ...open, secondsLeft: 'soon' }))).toBeNull();
+		expect(parseStatus(JSON.stringify({ ...open, timeLimitSeconds: undefined }))).toBeNull();
 	});
 
 	it('rejects anything that is not the expected shape', () => {

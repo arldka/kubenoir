@@ -28,6 +28,7 @@
 
 	const report = $derived(status?.report ?? null);
 	const costly = $derived(status?.outcome === 'closedWithCost');
+	const timeUp = $derived(status?.outcome === 'timeUp');
 	const found = $derived(status?.findings.found ?? []);
 	const total = $derived(status?.findings.total ?? 0);
 </script>
@@ -41,16 +42,18 @@
 	{#if status && report}
 		<div class="flex items-start justify-between gap-3">
 			<p class="font-typewriter text-xs tracking-widest text-ink-soft uppercase">Case report</p>
-			<span class="stamp {costly ? '' : 'stamp-ok'}" data-testid="report-outcome">
-				{costly ? 'Closed at a cost' : 'Case closed'}
+			<span class="stamp {costly || timeUp ? '' : 'stamp-ok'}" data-testid="report-outcome">
+				{timeUp ? "Time's up" : costly ? 'Closed at a cost' : 'Case closed'}
 			</span>
 		</div>
 
 		<h2 id="report-title" class="mt-2 font-typewriter text-2xl leading-tight">{title}</h2>
 		<p class="mt-2 text-[0.95rem] leading-relaxed">
-			{costly
-				? 'The service is back, but not everything came through unscathed.'
-				: 'The service is stable again and nothing else was harmed. Nicely done, detective.'}
+			{timeUp
+				? 'The fifteen minutes are over and the case is still open. Here is what was not in place when the line went dead.'
+				: costly
+					? 'The service is back, but not everything came through unscathed.'
+					: 'The service is stable again and nothing else was harmed. Nicely done, detective.'}
 		</p>
 
 		<dl class="mt-4 grid grid-cols-3 gap-3 border-y border-ink/30 py-3 text-sm">
@@ -86,10 +89,19 @@
 		</section>
 
 		<section class="mt-4">
-			<h3 class="font-typewriter text-xs tracking-widest text-ink-soft uppercase">The case was solved when</h3>
+			<h3 class="font-typewriter text-xs tracking-widest text-ink-soft uppercase">
+				{timeUp ? 'To close the case' : 'The case was solved when'}
+			</h3>
 			<ul class="mt-2 space-y-1.5 text-sm">
 				{#each report.assertions as item (item.label)}
-					<li class="flex gap-2"><span aria-hidden="true" class="text-ok">✓</span><span>{item.label}</span></li>
+					<li class="flex gap-2">
+						{#if item.ok}
+							<span aria-hidden="true" class="text-ok">✓</span><span>{item.label}</span>
+						{:else}
+							<span aria-hidden="true" class="text-stamp">✗</span>
+							<span><span class="sr-only">Not yet: </span>{item.label}</span>
+						{/if}
+					</li>
 				{/each}
 			</ul>
 		</section>

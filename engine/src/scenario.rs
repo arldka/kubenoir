@@ -270,6 +270,17 @@ fn check_format(scenario: &Scenario) -> Result<(), ScenarioError> {
 pub fn load(json: &str, files: &Files, apps: AppSet) -> Result<Cluster, ScenarioError> {
     let scenario: Scenario = serde_json::from_str(json).map_err(ScenarioError::Parse)?;
     check_format(&scenario)?;
+    // Every case gets the same fifteen minutes; a scenario cannot ask for another amount.
+    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(json) {
+        if let Some(key) = ["timeLimitMinutes", "timeLimitSeconds", "timeLimit"]
+            .into_iter()
+            .find(|k| raw.get(k).is_some())
+        {
+            return Err(ScenarioError::Format(format!(
+                "{key} is not allowed: every case has the same fixed limit of 15 minutes"
+            )));
+        }
+    }
     for (image, spec) in &scenario.images {
         let Some(app) = spec.app.as_deref() else { continue };
         if !apps::is_reference(app) {

@@ -287,3 +287,41 @@ test('failing to leave vim three times is scolded; :q! gets out', async ({ page 
 	await run(page, 'cat scratch.yaml');
 	await expect(screen(page)).toContainText('cat: scratch.yaml: No such file or directory');
 });
+
+test('the case counts down from fifteen minutes and closes unsolved when they are over', async ({ page }) => {
+	await openCase(page);
+	const left = page.getByTestId('time-left');
+	await expect(left).toHaveText(/^1[45]:\d\d$/);
+
+	await run(page, 'kubectl logs deploy/payments-api');
+	await expect(page.getByTestId('findings-counter')).toContainText('1 / 3');
+	// Waiting is a command: ten minutes pass at once.
+	await run(page, 'sleep 10m');
+	await expect(left).toHaveText(/^0[45]:\d\d$/);
+	await expect(page.getByTestId('report-outcome')).toBeHidden();
+
+	await run(page, 'sleep 5m');
+	await expect(left).toHaveText('00:00');
+	await expect(page.getByTestId('report-outcome')).toHaveText("Time's up");
+	await expect(page.getByText('To close the case')).toBeVisible();
+	// What did not hold is named, not just counted.
+	await expect(page.getByText('payments-api is available again')).toBeVisible();
+	await expect(page.getByText('Not yet:').first()).toBeAttached();
+});
+
+test('playing again after the time ran out starts a fresh case', async ({ page }) => {
+	await openCase(page);
+	await run(page, 'kubectl logs deploy/payments-api');
+	await run(page, 'sleep 15m');
+	await expect(page.getByTestId('report-outcome')).toHaveText("Time's up");
+
+	await page.getByRole('button', { name: 'Play again' }).click();
+	await expect(page.getByTestId('report-outcome')).toBeHidden();
+	await expect(page.getByTestId('time-left')).toHaveText(/^1[45]:\d\d$/);
+	await expect(page.getByTestId('findings-counter')).toContainText('0 / 3');
+	await expect(screen(page)).toContainText('CASE FILE:');
+	await page.locator('.xterm').click();
+	await run(page, 'kubectl get pods');
+	await expect(screen(page)).toContainText('CrashLoopBackOff');
+	await expect(screen(page)).not.toContainText('sleep 15m');
+});

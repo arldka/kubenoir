@@ -436,15 +436,18 @@ fn the_verdict_does_not_depend_on_how_time_is_advanced() {
 fn a_wrong_fix_never_closes_the_case() {
     let mut e = engine();
     e.eval("kubectl set env deployment/payments-api DATABASE_URI=postgres://x");
-    e.advance(900);
+    e.advance(899);
     assert_eq!(status(&e)["solved"], false);
+    // It never closes as solved: the fifteen minutes end it.
+    e.advance(1);
+    assert_eq!(status(&e)["outcome"], "timeUp");
 }
 
 #[test]
 fn doing_nothing_never_closes_the_case() {
     let mut e = engine();
     e.advance(3600);
-    assert_eq!(status(&e)["solved"], false);
+    assert_eq!(status(&e)["outcome"], "timeUp");
 }
 
 #[test]
@@ -636,7 +639,7 @@ fn a_wrong_database_url_never_brings_the_service_back() {
             "{wrong}: {rows:?}"
         );
         let s = status(&e);
-        assert_eq!(s["solved"], false, "{wrong}");
+        assert_eq!(s["outcome"], "timeUp", "{wrong}");
         assert!(e.eval("kubectl get deployment payments-api").contains("0/1"), "{wrong}");
     }
 }
