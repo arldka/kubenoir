@@ -20,7 +20,7 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - C10: `make ci` green ∀ task.
 - C11: scenario JSON = story & rules only (`id`, `title`, `briefing`, `objective`, `hints`, `success`, `findings`, `images`, clock). ∀ k8s objects (Nodes incl.) ∈ YAML files it references; ⊥ k8s objects inline in JSON.
 - C12: `kubectl edit` ⊥ scope (change state by editing a file & `kubectl apply|replace`) → the boss scolds (V28), ⊥ "not available"; terminal ships a small `vim` for the terminal's own files instead.
-- C13: each scenario = one fresh simulation: load & restart build a new `Engine` from the scenario files (+ apps); ⊥ cluster, clock, files, findings or judge state carried between scenarios | attempts. Time limit L min of cluster time from player start, 15 ≤ L ≤ 20, default 20 (`timeLimitMinutes`); unsolved at L → case closes failed.
+- C13: each scenario = one fresh simulation: load & restart build a new `Engine` from the scenario files (+ apps); ⊥ cluster, clock, files, findings or judge state carried between scenarios | attempts. Time limit = 15 min of cluster time from player start, same for every scenario (⊥ per-scenario setting); unsolved at 15 min → case closes failed.
 - C14: connectivity (T20–T24) = simplest model: a connection attempt is answered from the cluster state when the container started (start-time snapshot), ⊥ resumable runs, ⊥ re-simulation for networking. A fix shows when the container next starts (crash restart / backoff / rollout); player waits. Volumes (T17) keep their own timeline.
 
 ## §I interfaces
@@ -75,8 +75,8 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - V27: ∀ unsupported vim key|ex command → status-line message naming it (`E492: Not an editor command: foo`); ⊥ silent ignore, ⊥ partial effect.
 - V28: `kubectl edit` (any args, incl `--help`, `-n` before verb) → stderr `We don't do that here, we are not that kind of people.`; ⊥ `error:` prefix; ⊥ cluster|file change; ⊥ finding.
 - V29: vim failed exit attempts per session = `:q` refused (E37) + Ctrl-C + Ctrl-Z; ≥3 → status line `I knew you were a rookie but I didn't know you were this incapable` (replaces that attempt's normal message); editor stays open; `:q!`|`:wq`|`:x` still exit.
-- V30: elapsed cluster time since player start ≥ L min & case unsolved → status `solved: true`, outcome `timeUp`, report lists the assertions not held; solved before L ⊥ affected; `timeLimitMinutes` ∉ [15,20] → scenario load error naming the field.
-- V31: ∀ scenario load | restart → `Engine::from_scenario` anew; two engines built from same inputs ⊥ share state; after restart: cluster = scenario's, clock = start, findings 0, files = seeded, timer = L.
+- V30: elapsed cluster time since player start ≥ 15 min (900 s) & case unsolved → status `solved: true`, outcome `timeUp`, report lists the assertions not held; solved before 15 min ⊥ affected; scenario JSON with `timeLimitMinutes` → ⊥ ignored silently (load error: limit is fixed).
+- V31: ∀ scenario load | restart → `Engine::from_scenario` anew; two engines built from same inputs ⊥ share state; after restart: cluster = scenario's, clock = start, findings 0, files = seeded, timer = 15 min.
 - V32: connection outcome (T20+) = pure fn(store snapshot at container start, source pod, host, port); later cluster change ⊥ alters a running container's outcome.
 
 ## §T tasks
@@ -98,7 +98,7 @@ T35|.|engine: `vim`\|`vi` FILE command (parse, path rules, queue editor request)
 T36|.|`frontend/src/lib/terminal/vim.ts`: modal editor state machine, vitest-covered (incl. failed-exit counter): normal/insert/ex modes; h j k l w b e 0 $ gg G; i a I A o O; x dd yy p P u Ctrl-R; counts; `:w :q :wq :x :q!`; Tab→spaces, auto-indent|V24,V25,V26,V27,V29,I.ui
 T37|.|terminal integration: full-screen render (alt screen, mode/`[+]` status line, `~` rows), key routing in `session.ts`, `:w` → `Engine.writeFile`, back to prompt on quit; e2e: edit a manifest then `kubectl apply -f` it; fail to quit 3× → scolded, then `:q!` leaves|V24,V25,V29,I.js
 T38|x|`kubectl edit` → boss's reprimand (parse error variant printed as is, stderr in pipelines)|C12,V28
-T39|.|time limit: scenario `timeLimitMinutes` (15–20, default 20) → judge closes unsolved case at L as `timeUp` (report: what did not hold); status exposes limit & seconds left; UI timer counts down; restart builds a fresh engine (timer, cluster, files, findings reset); engine + e2e tests|C13,V30,V31
+T39|.|time limit: fixed 15 min → judge closes unsolved case at 900 s as `timeUp` (report: what did not hold); status exposes limit & seconds left; UI timer counts down; restart builds a fresh engine (timer, cluster, files, findings reset); engine + e2e tests|C13,V30,V31
 T13|x|verbs: `run`, `create namespace\|deployment\|configmap\|secret`, `set image`, `scale`, `rollout status\|history\|undo`, `label`, `expose`|I.cmd
 T14|x|Namespace kind + cluster-scoped resources + `namespaces "x" not found`|V1
 T15|x|env `valueFrom`/`envFrom` from ConfigMap/Secret at start|V12,V15
