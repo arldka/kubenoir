@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 2,
+  "id": "new-badge",
+  "title": "A Desk of Your Own",
+  "briefing": "First day at the precinct. The captain slides a badge across the table and says one thing: \"Every detective works out of a space of their own. Yours is called homicide. Find your own desk, rookie.\" Then she goes back to her paperwork. Nobody else is going to tell you how.",
+  "objective": "Set up your own space in the cluster: a namespace called homicide.",
+  "hints": [
+    "The captain won't tell you the command, but the terminal will. What does `kubectl --help` list under Basic Commands?",
+    "`kubectl create --help` shows everything that can be created from the command line.",
+    "A namespace needs nothing but a name: `kubectl create namespace homicide`."
+  ],
+  "success": {
+    "stableSeconds": 3,
+    "assert": [
+      {
+        "label": "the homicide namespace exists and is active",
+        "select": { "kind": "Namespace", "name": "homicide" },
+        "count": { "exactly": 1 },
+        "each": [{ "path": "status.phase", "equals": "Active" }]
+      }
+    ],
+    "constraints": [
+      {
+        "label": "the default namespace was left alone",
+        "forbid": { "verb": "delete", "resource": "namespaces", "name": "default" }
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "empty-precinct",
+      "clue": "The cluster has `default` and `kube-system`, and no desk with your name on it.",
+      "when": { "command": { "verb": "get", "resource": "namespaces" } }
+    },
+    {
+      "id": "anatomy",
+      "clue": "`kubectl explain namespace` shows what a namespace is made of. Only a name is needed.",
+      "when": { "command": { "verb": "explain" } }
+    }
+  ],
+  "cluster": {
+    "now": "2026-10-27T09:00:00Z",
+    "manifests": ["manifests/nodes.yaml"]
+  }
+}

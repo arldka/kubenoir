@@ -1,0 +1,7 @@
+[
+  { "kind": "eval", "command": "kubectl --help" },
+  { "kind": "eval", "command": "kubectl create --help" },
+  { "kind": "eval", "command": "kubectl get namespaces" },
+  { "kind": "eval", "command": "kubectl create namespace homicide" },
+  { "kind": "advance", "seconds": 10 }
+]
