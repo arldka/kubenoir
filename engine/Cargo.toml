@@ -42,6 +42,11 @@ rusqlite = "0.41"
 # host hooks (clock, randomness, sleep) that SQLite needs at link time.
 sqlite-wasm-rs = { version = "0.6", features = ["wasm-bindgen"] }
 
+# Warm-up replays minutes of crash-loop history at scenario load; unoptimized that makes the test
+# suite crawl, so dev and test builds are lightly optimized.
+[profile.dev]
+opt-level = 1
+
 [profile.release]
 opt-level = "s"
 lto = true

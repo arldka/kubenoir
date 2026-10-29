@@ -72,11 +72,11 @@ fn a_mistyped_tag_fails_to_pull_backs_off_and_recovers_when_fixed() {
     assert_eq!(e.eval("kubectl get pod p -o jsonpath='{.status.phase}'"), "Pending");
     assert!(e.eval("kubectl logs p").starts_with("Error from server (BadRequest)"));
 
-    // Retries back off: 10 s, then 20 s, then 40 s apart. The failure repeats, never runs.
+    // Retries come every 10 s, flat: the failure repeats, and it never runs.
     e.advance(100);
     assert!(["ErrImagePull", "ImagePullBackOff"].contains(&status(&mut e, "p").as_str()));
     assert!(
-        events_count(&mut e, "Error: ErrImagePull") >= 3,
+        events_count(&mut e, "Error: ErrImagePull") >= 8,
         "{}",
         self::events(&mut e)
     );

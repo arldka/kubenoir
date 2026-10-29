@@ -5,8 +5,9 @@
 //! Creating --(image pull)--> Running --(program exits)--> BackOff --(delay)--> Running ...
 //!                                    \-(policy says stop)--> Exited
 //! ```
-//! Backoff doubles from 10 s to a 300 s cap and resets after a 10 minute clean run, like the
-//! real kubelet. Every transition is stamped with the time it was due, appends log lines and
+//! A container that exited, an image that could not be pulled, a volume that could not be mounted
+//! and a missing ConfigMap are all retried every 10 s, flat: this game does not use the real
+//! kubelet's doubling backoff (10 s up to 300 s), so a fix shows within seconds. Every transition is stamped with the time it was due, appends log lines and
 //! events, and is mirrored into `pod.status`. Only pods the scheduler admitted (status phase
 //! `Pending` with a node) are simulated; pods authored with a status stay static.
 
@@ -29,10 +30,9 @@ use crate::store::StoreError;
 
 /// Runtime-row name for pod-level state (as opposed to a container's).
 const POD_ROW: &str = "*";
-const BACKOFF_BASE_SECS: i64 = 10;
-const BACKOFF_CAP_SECS: i64 = 300;
-/// A run at least this long counts as healthy and resets the backoff.
-const CLEAN_RUN_SECS: i64 = 600;
+/// How long the kubelet waits before it tries again: restarting an exited container, pulling an
+/// image again, mounting volumes, creating a container whose ConfigMap is missing.
+const RETRY_SECS: i64 = 10;
 /// A container counts as Ready once it has been running this long. Combined with exits winning
 /// ties, a process that dies within a second never flaps Ready, so rollouts of a crashing
 /// image stall exactly as they do on a real cluster.
@@ -66,8 +66,6 @@ struct Runtime {
     /// Which run of the container this is; 0 for the first start.
     instance: u32,
     restart_count: i32,
-    /// Consecutive crashes, driving the backoff delay.
-    crashes: u32,
     started_at: i64,
     /// `Creating`: when the image is pulled and the container starts. `BackOff`: when it restarts.
     due: i64,
@@ -78,7 +76,7 @@ struct Runtime {
     ready: bool,
     last: Option<Terminated>,
     /// Why the container cannot be created yet (a ConfigMap or Secret it refers to is missing);
-    /// the kubelet tries again every [`BACKOFF_BASE_SECS`].
+    /// the kubelet tries again every [`RETRY_SECS`].
     #[serde(default)]
     config_error: Option<String>,
     /// Why the image could not be pulled on the last attempt; the container is waiting to try
@@ -114,7 +112,6 @@ impl Runtime {
             phase: Phase::Creating,
             instance: 0,
             restart_count: 0,
-            crashes: 0,
             started_at: 0,
             due,
             backoff_secs: 0,
@@ -307,7 +304,7 @@ fn step_pod(env: &Env<'_>, mut pod: Pod) -> Result<bool, StoreError> {
         for container in &spec.containers {
             let image = container.image.clone().unwrap_or_default();
             if mount_error.is_some() {
-                let mut waiting = Runtime::creating(env.now + BACKOFF_BASE_SECS);
+                let mut waiting = Runtime::creating(env.now + RETRY_SECS);
                 waiting.awaiting_volumes = true;
                 runtimes.insert(container.name.clone(), waiting);
                 continue;
@@ -390,7 +387,7 @@ fn apply(
                 if !vols.ready {
                     if let Err(message) = vols.initialize(ctx.env.store, &ctx.pod)? {
                         ctx.event(None, EventType::Warning, "FailedMount", &message, t)?;
-                        rt.due = t + BACKOFF_BASE_SECS;
+                        rt.due = t + RETRY_SECS;
                         return Ok(());
                     }
                 }
@@ -423,7 +420,7 @@ fn apply(
                     rt.pull_failures += 1;
                     rt.pull_error = Some(message);
                     rt.pull_failed_at = t;
-                    rt.due = t + (BACKOFF_BASE_SECS << (rt.pull_failures - 1).min(10)).min(BACKOFF_CAP_SECS);
+                    rt.due = t + RETRY_SECS;
                     return Ok(());
                 }
                 rt.pull_error = None;
@@ -442,7 +439,7 @@ fn apply(
                     }
                     ctx.event(c, EventType::Warning, "Failed", &format!("Error: {message}"), t)?;
                     rt.config_error = Some(message);
-                    rt.due = t + BACKOFF_BASE_SECS;
+                    rt.due = t + RETRY_SECS;
                     return Ok(());
                 }
             };
@@ -552,12 +549,7 @@ fn apply(
                 rt.phase = Phase::Exited;
                 return Ok(());
             }
-            rt.crashes = if t - rt.started_at >= CLEAN_RUN_SECS {
-                1
-            } else {
-                rt.crashes + 1
-            };
-            let delay = (BACKOFF_BASE_SECS << (rt.crashes - 1).min(10)).min(BACKOFF_CAP_SECS);
+            let delay = RETRY_SECS;
             rt.phase = Phase::BackOff;
             rt.due = t + delay;
             rt.backoff_secs = delay;
@@ -854,26 +846,23 @@ mod tests {
     }
 
     #[test]
-    fn crash_loop_timeline_matches_kubelet_backoff() {
+    fn crash_loop_restarts_every_ten_seconds() {
         let mut e = crate::scenario::inline::engine(&scenario(TYPO));
         assert_eq!(row(&mut e)[..4], ["p", "0/1", "ContainerCreating", "0"]);
 
-        // Started at +2 s, crashes at +3 s; then restarts at +13, +34, +75, +156, +317, +618.
-        let restarts_at = [
+        // Started at +2 s, crashes 1 s later, waits a flat 10 s, starts again: +13, +24, +35, ...
+        let timeline = [
             (2, "Running", "0"),
             (3, "CrashLoopBackOff", "0"),
+            (12, "CrashLoopBackOff", "0"),
             (13, "Running", "1"),
             (14, "CrashLoopBackOff", "1"),
-            (34, "Running", "2"),
-            (75, "Running", "3"),
-            (156, "Running", "4"),
-            (317, "Running", "5"),
-            (318, "CrashLoopBackOff", "5"),
-            (617, "CrashLoopBackOff", "5"),
-            (618, "Running", "6"),
+            (24, "Running", "2"),
+            (25, "CrashLoopBackOff", "2"),
+            (35, "Running", "3"),
         ];
         let mut elapsed = 0;
-        for (at, status, restarts) in restarts_at {
+        for (at, status, restarts) in timeline {
             e.advance(at - elapsed);
             elapsed = at;
             let r = row(&mut e);
@@ -882,13 +871,23 @@ mod tests {
     }
 
     #[test]
-    fn backoff_is_capped_at_five_minutes() {
+    fn the_delay_never_grows() {
         let mut e = crate::scenario::inline::engine(&scenario(TYPO));
-        // Restart #6 at +618, crash at +619, then the delay is capped at 300 s -> restart #7 at +919.
-        e.advance(918);
-        assert_eq!(row(&mut e)[3], "6");
+        // Restart n happens at 13 + 11 (n - 1): the wait is 10 s however long the loop has run.
+        e.advance(13 + 11 * 99);
+        assert_eq!(row(&mut e)[3], "100");
+        // It crashes a second after each start, then waits a flat 10 s for the next.
         e.advance(1);
-        assert_eq!(row(&mut e)[3], "7");
+        assert_eq!(row(&mut e)[2], "CrashLoopBackOff");
+        let waiting = e.eval("kubectl get pod p -o jsonpath='{.status.containerStatuses[0].state.waiting.message}'");
+        assert!(
+            waiting.starts_with("back-off 10s restarting failed container=app pod=p_default("),
+            "{waiting}"
+        );
+        e.advance(9);
+        assert_eq!(row(&mut e)[3], "100", "still waiting");
+        e.advance(1);
+        assert_eq!(row(&mut e)[3], "101");
     }
 
     #[test]

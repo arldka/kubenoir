@@ -46,7 +46,7 @@ fn the_player_starts_47_minutes_into_a_crash_loop() {
 
     let payments = payments_rows(&mut e);
     assert_eq!(payments.len(), 1, "{pods}");
-    assert_eq!(payments[0][1..], ["0/1", "CrashLoopBackOff", "13", "47m"]);
+    assert_eq!(payments[0][1..], ["0/1", "CrashLoopBackOff", "256", "47m"]);
 
     assert!(e.eval("kubectl get pods -n kube-system").contains("etcd-control-plane"));
 }
@@ -80,7 +80,7 @@ fn describe_and_events_point_at_the_typo_and_the_backoff() {
         "      Reason:       CrashLoopBackOff",
         "    Last State:     Terminated",
         "      Exit Code:    1",
-        "    Restart Count:  13",
+        "    Restart Count:  256",
         "      PORT:         8080",
         "      DATABSE_URL:  postgres://payments@postgres.default.svc.cluster.local:5432/payments",
     ] {
@@ -100,7 +100,7 @@ fn describe_and_events_point_at_the_typo_and_the_backoff() {
         .find(|l| l.contains("BackOff"))
         .unwrap_or_else(|| panic!("{events}"));
     assert!(
-        backoff.contains("Warning") && backoff.contains("(x13 over 4"),
+        backoff.contains("Warning") && backoff.contains("(x256 over 4"),
         "{backoff}"
     );
     assert!(backoff.contains(&format!("pod/{pod}")), "{backoff}");

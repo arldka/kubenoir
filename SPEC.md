@@ -22,6 +22,7 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - C12: `kubectl edit` ⊥ scope (change state by editing a file & `kubectl apply|replace`) → the boss scolds (V28), ⊥ "not available"; terminal ships a small `vim` for the terminal's own files instead.
 - C13: each scenario = one fresh simulation: load & restart build a new `Engine` from the scenario files (+ apps); ⊥ cluster, clock, files, findings or judge state carried between scenarios | attempts. Time limit = 15 min of cluster time from player start, same for every scenario (⊥ per-scenario setting); unsolved at 15 min → case closes failed.
 - C14: connectivity (T20–T24) = simplest model: a connection attempt is answered from the cluster state when the container started (start-time snapshot), ⊥ resumable runs, ⊥ re-simulation for networking. A fix shows when the container next starts (crash restart / backoff / rollout); player waits. Volumes (T17) keep their own timeline.
+- C15: kubelet retries are flat, ⊥ Kubernetes' doubling backoff: a container that exited restarts 10 s after it exited; a failed image pull, a failed volume mount and a missing ConfigMap/Secret key are retried every 10 s; CrashLoopBackOff message says `back-off 10s`. Warm-up history replays accordingly (a 47 min crash loop = 256 restarts).
 
 ## §I interfaces
 

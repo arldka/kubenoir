@@ -599,10 +599,10 @@ mod tests {
         let mut e = engine("2026-10-27T17:43:00Z"); // 47 minutes of history
         let p = payments(&mut e);
         assert_eq!(p.len(), 1);
-        // Restarts at +13 s, 34, 75, 156, 317, 618, then every 301 s: 13 of them by +2820 s.
+        // A restart every 11 s (1 s crash, 10 s wait) from +13 s: 256 of them by +2820 s.
         assert_eq!(
             (p[0].1.as_str(), p[0].2.as_str(), p[0].3.as_str()),
-            ("0/1", "CrashLoopBackOff", "13")
+            ("0/1", "CrashLoopBackOff", "256")
         );
         let table = e.eval("kubectl get pods");
         assert!(
