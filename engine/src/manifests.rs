@@ -24,14 +24,14 @@ pub const LAST_APPLIED: &str = "kubectl.kubernetes.io/last-applied-configuration
 pub type Files = BTreeMap<String, String>;
 
 /// One document of one file.
-struct Doc<'a> {
-    file: &'a str,
+struct Doc {
+    file: String,
     manifest: Value,
     /// Namespace it goes to when its kind is namespaced.
     namespace: String,
 }
 
-impl Doc<'_> {
+impl Doc {
     fn name(&self) -> &str {
         self.manifest["metadata"]["name"].as_str().unwrap_or_default()
     }
@@ -60,17 +60,36 @@ pub fn parse_documents(text: &str) -> Result<Vec<Value>, String> {
     Ok(objects)
 }
 
+/// The files a `-f` argument names: the file itself, or the manifest files directly inside a
+/// directory (`.yaml`, `.yml` and `.json`, in name order, like kubectl).
+fn files_named(path: &str, files: &Files) -> Option<Vec<String>> {
+    let key = normalize_path(path).trim_end_matches('/').to_string();
+    if files.contains_key(&key) {
+        return Some(vec![key]);
+    }
+    let prefix = format!("{key}/");
+    let inside: Vec<String> = files
+        .keys()
+        .filter(|f| f.strip_prefix(&prefix).is_some_and(|rest| !rest.contains('/')))
+        .filter(|f| [".yaml", ".yml", ".json"].iter().any(|ext| f.ends_with(ext)))
+        .cloned()
+        .collect();
+    let is_dir = files.keys().any(|f| f.starts_with(&prefix));
+    is_dir.then_some(inside)
+}
+
 /// Read and check every document of every file. `Err` is a whole-command error, printed alone.
-fn read_docs<'a>(args: &'a ManifestArgs, files: &Files) -> Result<Vec<Doc<'a>>, String> {
+fn read_docs(args: &ManifestArgs, files: &Files) -> Result<Vec<Doc>, String> {
     let mut docs = Vec::new();
     for file in &args.files {
-        let text = files
-            .get(&normalize_path(file))
-            .ok_or_else(|| format!("error: the path \"{file}\" does not exist"))?;
-        let objects = parse_documents(text)
-            .map_err(|e| format!("error: error parsing {file}: error converting YAML to JSON: {e}"))?;
-        for object in objects {
-            docs.push(doc(args, file, object)?);
+        let names = files_named(file, files).ok_or_else(|| format!("error: the path \"{file}\" does not exist"))?;
+        for name in names {
+            let text = &files[&name];
+            let objects = parse_documents(text)
+                .map_err(|e| format!("error: error parsing {name}: error converting YAML to JSON: {e}"))?;
+            for object in objects {
+                docs.push(doc(args, &name, object)?);
+            }
         }
     }
     if docs.is_empty() {
@@ -79,7 +98,7 @@ fn read_docs<'a>(args: &'a ManifestArgs, files: &Files) -> Result<Vec<Doc<'a>>, 
     Ok(docs)
 }
 
-fn doc<'a>(args: &ManifestArgs, file: &'a str, manifest: Value) -> Result<Doc<'a>, String> {
+fn doc(args: &ManifestArgs, file: &str, manifest: Value) -> Result<Doc, String> {
     let kind_missing = manifest["kind"].as_str().is_none_or(str::is_empty);
     let api_version_missing = manifest["apiVersion"].as_str().is_none_or(str::is_empty);
     if !manifest.is_object() || kind_missing || api_version_missing {
@@ -105,7 +124,7 @@ fn doc<'a>(args: &ManifestArgs, file: &'a str, manifest: Value) -> Result<Doc<'a
         .unwrap_or(DEFAULT_NAMESPACE)
         .to_string();
     Ok(Doc {
-        file,
+        file: file.to_string(),
         manifest,
         namespace,
     })
@@ -113,7 +132,7 @@ fn doc<'a>(args: &ManifestArgs, file: &'a str, manifest: Value) -> Result<Doc<'a
 
 /// How a failed write is reported: `Error from server (...): error when <verb> "<file>": ...`,
 /// or kubectl's own message for kinds it cannot map.
-fn write_error(doc: &Doc<'_>, verb: &str, error: &ApiError) -> String {
+fn write_error(doc: &Doc, verb: &str, error: &ApiError) -> String {
     match error {
         ApiError::NoKindMatch { .. } => format!(
             "error: resource mapping not found for name: \"{}\" namespace: \"{}\" from \"{}\": {}\nensure CRDs are installed first",
@@ -122,6 +141,7 @@ fn write_error(doc: &Doc<'_>, verb: &str, error: &ApiError) -> String {
             doc.file,
             error.message()
         ),
+        ApiError::NotSimulated { .. } => format!("error: {} (in \"{}\")", error.message(), doc.file),
         ApiError::Store(e) => format!("error: {e}"),
         _ => format!(
             "Error from server ({}): error when {verb} \"{}\": {}",
@@ -193,16 +213,11 @@ pub fn apply(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Writte
 
 /// Apply one document: create it, or three-way merge it into what is stored. A failure says
 /// which of the two it was (`creating` / `patching`).
-fn apply_one(doc: &Doc<'_>, env: &Env<'_>) -> Result<(Vec<String>, &'static str), (&'static str, ApiError)> {
+fn apply_one(doc: &Doc, env: &Env<'_>) -> Result<(Vec<String>, &'static str), (&'static str, ApiError)> {
     let creating = |e| ("creating", e);
     let kind = doc.manifest["kind"].as_str().unwrap_or_default();
     let api_version = doc.manifest["apiVersion"].as_str().unwrap_or_default();
-    let info = api::kind_for(kind, api_version).ok_or_else(|| {
-        creating(ApiError::NoKindMatch {
-            kind: kind.to_string(),
-            api_version: api_version.to_string(),
-        })
-    })?;
+    let info = api::kind_for(kind, api_version).ok_or_else(|| creating(api::kind_error(kind, api_version)))?;
 
     // What kubectl records as the configuration: the document as written, namespace filled in.
     let mut config = doc.manifest.clone();
@@ -300,10 +315,7 @@ pub fn delete(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Writt
         let kind = doc.manifest["kind"].as_str().unwrap_or_default();
         let api_version = doc.manifest["apiVersion"].as_str().unwrap_or_default();
         let Some(info) = api::kind_for(kind, api_version) else {
-            let error = ApiError::NoKindMatch {
-                kind: kind.to_string(),
-                api_version: api_version.to_string(),
-            };
+            let error = api::kind_error(kind, api_version);
             errors.push(write_error(doc, "deleting", &error));
             continue;
         };
@@ -338,10 +350,7 @@ pub fn replace(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Writ
         let kind = doc.manifest["kind"].as_str().unwrap_or_default();
         let api_version = doc.manifest["apiVersion"].as_str().unwrap_or_default();
         let Some(info) = api::kind_for(kind, api_version) else {
-            let error = ApiError::NoKindMatch {
-                kind: kind.to_string(),
-                api_version: api_version.to_string(),
-            };
+            let error = api::kind_error(kind, api_version);
             errors.push(write_error(doc, "replacing", &error));
             continue;
         };

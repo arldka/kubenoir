@@ -122,6 +122,111 @@ pub fn kind_for_arg(arg: &str) -> Option<&'static KindInfo> {
     })
 }
 
+/// Kubernetes kinds (lowercase singular names) that exist but that this terminal does not
+/// simulate. Anything registered in `KINDS` is simulated and not listed here.
+const UNSIMULATED_KINDS: &[&str] = &[
+    "clusterrole",
+    "clusterrolebinding",
+    "componentstatus",
+    "cronjob",
+    "customresourcedefinition",
+    "daemonset",
+    "endpoints",
+    "endpointslice",
+    "horizontalpodautoscaler",
+    "ingress",
+    "ingressclass",
+    "job",
+    "lease",
+    "limitrange",
+    "networkpolicy",
+    "persistentvolume",
+    "persistentvolumeclaim",
+    "poddisruptionbudget",
+    "podtemplate",
+    "priorityclass",
+    "replicationcontroller",
+    "resourcequota",
+    "role",
+    "rolebinding",
+    "serviceaccount",
+    "statefulset",
+    "storageclass",
+    "volumeattachment",
+];
+
+/// Short and plural names of those kinds, as kubectl accepts them.
+const UNSIMULATED_NAMES: &[&str] = &[
+    "all",
+    "clusterroles",
+    "clusterrolebindings",
+    "componentstatuses",
+    "cs",
+    "cronjobs",
+    "cj",
+    "crd",
+    "crds",
+    "customresourcedefinitions",
+    "daemonsets",
+    "ds",
+    "ep",
+    "endpointslices",
+    "hpa",
+    "horizontalpodautoscalers",
+    "ing",
+    "ingresses",
+    "ingressclasses",
+    "jobs",
+    "leases",
+    "limitranges",
+    "limits",
+    "netpol",
+    "networkpolicies",
+    "pc",
+    "pdb",
+    "persistentvolumes",
+    "persistentvolumeclaims",
+    "poddisruptionbudgets",
+    "podtemplates",
+    "pv",
+    "pvc",
+    "priorityclasses",
+    "quota",
+    "rc",
+    "replicationcontrollers",
+    "resourcequotas",
+    "rolebindings",
+    "roles",
+    "sa",
+    "serviceaccounts",
+    "sc",
+    "statefulsets",
+    "sts",
+    "storageclasses",
+    "volumeattachments",
+];
+
+/// Whether a kubectl resource argument names a real Kubernetes resource this terminal does not
+/// simulate (as opposed to something that is not a resource at all).
+pub fn is_unsimulated_resource(arg: &str) -> bool {
+    let name = arg.to_ascii_lowercase();
+    let name = name.split('.').next().unwrap_or_default();
+    kind_for_arg(arg).is_none() && (UNSIMULATED_NAMES.contains(&name) || UNSIMULATED_KINDS.contains(&name))
+}
+
+/// The error for a manifest whose kind is not registered: "not available here" if real
+/// Kubernetes has it, else the missing-CRD error kubectl gives.
+pub fn kind_error(kind: &str, api_version: &str) -> ApiError {
+    if UNSIMULATED_KINDS.contains(&kind.to_ascii_lowercase().as_str()) {
+        ApiError::NotSimulated { kind: kind.to_string() }
+    } else {
+        ApiError::NoKindMatch {
+            kind: kind.to_string(),
+            api_version: api_version.to_string(),
+        }
+    }
+}
+
 /// The registry entry for a kind name (`Pod`).
 pub fn info(kind: &str) -> Option<&'static KindInfo> {
     KINDS.iter().find(|k| k.kind == kind)
@@ -143,6 +248,10 @@ pub enum ApiError {
     NoKindMatch {
         kind: String,
         api_version: String,
+    },
+    /// A real Kubernetes kind that this terminal does not simulate.
+    NotSimulated {
+        kind: String,
     },
     /// The manifest does not decode into its kind (wrong type, unknown field).
     BadRequest {
@@ -171,7 +280,10 @@ impl ApiError {
     /// Reason in `Error from server (<reason>)`; `None` for errors kubectl raises itself.
     pub fn reason(&self) -> Option<&'static str> {
         match self {
-            ApiError::MissingTypeMeta { .. } | ApiError::NoKindMatch { .. } | ApiError::Store(_) => None,
+            ApiError::MissingTypeMeta { .. }
+            | ApiError::NoKindMatch { .. }
+            | ApiError::NotSimulated { .. }
+            | ApiError::Store(_) => None,
             ApiError::BadRequest { .. } => Some("BadRequest"),
             ApiError::Invalid { .. } => Some("Invalid"),
             ApiError::NotFound { .. } => Some("NotFound"),
@@ -198,6 +310,7 @@ impl ApiError {
             ApiError::NoKindMatch { kind, api_version } => {
                 format!("no matches for kind \"{kind}\" in version \"{api_version}\"")
             }
+            ApiError::NotSimulated { kind } => format!("the {kind} kind is not available in this terminal"),
             ApiError::BadRequest {
                 kind,
                 api_version,
@@ -445,10 +558,7 @@ fn admit(manifest: &Value, namespace: &str) -> Result<(&'static KindInfo, Value)
             api_version_missing: api_version.is_empty(),
         });
     }
-    let info = kind_for(kind, api_version).ok_or_else(|| ApiError::NoKindMatch {
-        kind: kind.to_string(),
-        api_version: api_version.to_string(),
-    })?;
+    let info = kind_for(kind, api_version).ok_or_else(|| kind_error(kind, api_version))?;
     let bad_request = |reason: String| ApiError::BadRequest {
         kind: info.kind,
         api_version: info.api_version,

@@ -13,7 +13,7 @@ use crate::exec::execute;
 use crate::fs::{self, Output};
 use crate::judge::{is_error_output, Touched};
 use crate::manifests::{normalize_path, Files};
-use crate::parser::{parse, shell_split, Command, OutputFormat, ParseError};
+use crate::parser::{parse_words, shell_split, shell_split_marked, Command, OutputFormat, ParseError};
 
 /// A `kubectl`/`cat`/`ls` command a line ran, for the judge.
 pub struct Executed {
@@ -114,6 +114,15 @@ fn scan(input: &str) -> Result<Parsed, String> {
                     if redirect.is_some() {
                         return Err(unsupported("more than one redirection"));
                     }
+                    // `2> file` names a file descriptor: the digit is not an argument.
+                    let digits = stage.chars().rev().take_while(char::is_ascii_digit).count();
+                    let before = &stage[..stage.len() - digits];
+                    if digits > 0 && (before.is_empty() || before.ends_with(char::is_whitespace)) {
+                        return Err(unsupported("redirecting a file descriptor (such as 2>)"));
+                    }
+                    if chars.get(i + 1) == Some(&'&') {
+                        return Err(unsupported("redirecting to a file descriptor (>&)"));
+                    }
                     let append = chars.get(i + 1) == Some(&'>');
                     i += if append { 2 } else { 1 };
                     while chars.get(i).is_some_and(|c| c.is_whitespace()) {
@@ -185,7 +194,7 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
     let mut stdin = String::new();
     let mut stderr: Vec<String> = Vec::new();
     for (index, stage) in parsed.stages.iter().enumerate() {
-        let words = match shell_split(stage) {
+        let words = match expand_words(stage, files) {
             Ok(words) => words,
             Err(e) => {
                 stderr.push(e.to_string());
@@ -205,7 +214,7 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
                 stderr: Vec::new(),
             },
             _ if filtered.is_some() => filtered.unwrap_or_default(),
-            _ => match parse(stage) {
+            _ => match parse_words(&words) {
                 Err(e) => Output {
                     stdout: String::new(),
                     stderr: vec![e.to_string()],
@@ -224,10 +233,17 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
 
     let mut output = stdin;
     if let Some(redirect) = parsed.redirect {
-        let path = normalize_path(&redirect.target);
+        let target = redirect.target.as_str();
+        let path = normalize_path(target);
         let prefix = format!("{path}/");
-        if path.is_empty() || files.keys().any(|f| f.starts_with(&prefix)) {
-            stderr.push(format!("error: {}: Is a directory", redirect.target));
+        if target == "/dev/null" {
+            // The bit bucket: the output is thrown away.
+        } else if target.starts_with(['/', '~']) || path.split('/').any(|segment| segment == "..") {
+            stderr.push(format!(
+                "error: {target}: writing outside the terminal's own files is not available; use a relative path"
+            ));
+        } else if path.is_empty() || files.keys().any(|f| f.starts_with(&prefix)) {
+            stderr.push(format!("error: {target}: Is a directory"));
         } else {
             let text = files.entry(path).or_default();
             if !redirect.append {
@@ -246,6 +262,90 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
 /// `-o jsonpath` prints exactly what its template says, with no newline added after it.
 fn exact_bytes(command: &Command) -> bool {
     matches!(command, Command::Get(args) if matches!(args.output, OutputFormat::JsonPath(_)))
+}
+
+// ---- wildcards ------------------------------------------------------------------------------
+
+/// Does `text` match the glob `pattern` (`*`, `?`, `[abc]`, `[a-z]`, `[!x]`)? One path segment.
+fn glob_segment(pattern: &[char], text: &[char]) -> bool {
+    match pattern.first() {
+        None => text.is_empty(),
+        Some('*') => (0..=text.len()).any(|skip| glob_segment(&pattern[1..], &text[skip..])),
+        Some('?') => !text.is_empty() && glob_segment(&pattern[1..], &text[1..]),
+        Some('[') => {
+            let close = pattern.iter().skip(2).position(|c| *c == ']').map(|i| i + 2);
+            match (close, text.first()) {
+                (Some(end), Some(&c)) => {
+                    class_matches(&pattern[1..end], c) && glob_segment(&pattern[end + 1..], &text[1..])
+                }
+                (Some(_), None) => false,
+                (None, _) => text.first() == Some(&'[') && glob_segment(&pattern[1..], &text[1..]),
+            }
+        }
+        Some(c) => text.first() == Some(c) && glob_segment(&pattern[1..], &text[1..]),
+    }
+}
+
+fn class_matches(set: &[char], c: char) -> bool {
+    let (negated, set) = match set.first() {
+        Some('!') | Some('^') => (true, &set[1..]),
+        _ => (false, set),
+    };
+    let mut i = 0;
+    let mut found = false;
+    while i < set.len() {
+        if set.get(i + 1) == Some(&'-') && i + 2 < set.len() {
+            found |= set[i] <= c && c <= set[i + 2];
+            i += 3;
+        } else {
+            found |= set[i] == c;
+            i += 1;
+        }
+    }
+    found != negated
+}
+
+/// The files and directories matching a glob, sorted. Wildcards never cross a `/`, and a name
+/// starting with a dot is matched only by a pattern that starts with one.
+fn glob(pattern: &str, files: &Files) -> Vec<String> {
+    let pattern = normalize_path(pattern);
+    let pattern_segments: Vec<Vec<char>> = pattern.split('/').map(|s| s.chars().collect()).collect();
+    let mut candidates = std::collections::BTreeSet::new();
+    for path in files.keys() {
+        let mut so_far = String::new();
+        for segment in path.split('/') {
+            if !so_far.is_empty() {
+                so_far.push('/');
+            }
+            so_far.push_str(segment);
+            candidates.insert(so_far.clone());
+        }
+    }
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            let segments: Vec<Vec<char>> = candidate.split('/').map(|s| s.chars().collect()).collect();
+            segments.len() == pattern_segments.len()
+                && segments.iter().zip(&pattern_segments).all(|(text, pattern)| {
+                    (!text.starts_with(&['.']) || pattern.starts_with(&['.'])) && glob_segment(pattern, text)
+                })
+        })
+        .collect()
+}
+
+/// The words of a stage, with each unquoted wildcard word replaced by the files it matches (or
+/// left as typed when it matches none, like a shell).
+fn expand_words(stage: &str, files: &Files) -> Result<Vec<String>, ParseError> {
+    let mut words = Vec::new();
+    for (word, wildcard) in shell_split_marked(stage)? {
+        let matches = if wildcard { glob(&word, files) } else { Vec::new() };
+        if matches.is_empty() {
+            words.push(word);
+        } else {
+            words.extend(matches);
+        }
+    }
+    Ok(words)
 }
 
 /// A judged command. Its stdout continues down the pipe unless the whole thing was an error.

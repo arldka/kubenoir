@@ -121,8 +121,13 @@ fn header(info: &KindInfo) -> String {
 pub fn explain(path: &str) -> Result<String, String> {
     let mut segments = path.split('.');
     let resource = segments.next().unwrap_or_default();
-    let info =
-        api::kind_for_arg(resource).ok_or_else(|| format!("the server doesn't have a resource type \"{resource}\""))?;
+    let info = api::kind_for_arg(resource).ok_or_else(|| {
+        if api::is_unsimulated_resource(resource) {
+            format!("the resource type {resource} is not available in this terminal")
+        } else {
+            format!("the server doesn't have a resource type \"{resource}\"")
+        }
+    })?;
     let root = root_schema(info.kind).ok_or_else(|| format!("no documentation is available for {}", info.kind))?;
     let defs = &root["$defs"];
 

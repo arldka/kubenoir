@@ -58,8 +58,8 @@ fn every_command_has_a_page_and_unknown_ones_still_fail() {
         assert!(page.contains("Usage:\n  kubectl "), "{command}\n{page}");
     }
     assert_eq!(
-        e.eval("kubectl port-forward --help"),
-        "error: unknown command \"port-forward\" for \"kubectl\""
+        e.eval("kubectl bogus --help"),
+        "error: unknown command \"bogus\" for \"kubectl\""
     );
     // Help works whatever else was typed.
     assert_eq!(
@@ -112,7 +112,7 @@ fn explain_documents_resources_and_fields() {
     );
     assert_eq!(
         e.eval("kubectl explain pod --recursive"),
-        "error: unknown flag: --recursive"
+        "error: the flag --recursive is not available in this terminal"
     );
     assert_eq!(e.eval("kubectl explain pod svc"), "error: Unexpected args: [svc]");
     assert!(

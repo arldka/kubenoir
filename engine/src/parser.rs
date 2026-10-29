@@ -19,8 +19,19 @@ impl ResourceKind {
             "events" | "event" | "ev" => Ok(ResourceKind::Event),
             "deployments" | "deployment" | "deploy" => Ok(ResourceKind::Deployment),
             "replicasets" | "replicaset" | "rs" => Ok(ResourceKind::ReplicaSet),
-            other => Err(ParseError::UnsupportedResource(other.to_string())),
+            other => Err(unsupported_resource(other)),
         }
+    }
+
+    /// [`from_arg`](Self::from_arg) for a command: a kind the API knows but this command cannot
+    /// act on says so, rather than claiming the server lacks the resource.
+    pub(crate) fn for_verb(verb: &str, arg: &str) -> Result<Self, ParseError> {
+        Self::from_arg(arg).map_err(|error| match (&error, crate::api::kind_for_arg(arg)) {
+            (ParseError::UnsupportedResource(_), Some(info)) => {
+                ParseError::Unsupported(format!("kubectl {verb} for {}", info.resource()))
+            }
+            _ => error,
+        })
     }
 
     /// Kind as stored in the cluster (`Pod`).
@@ -246,7 +257,7 @@ pub enum ParseError {
     /// Both `-f` and resource arguments.
     FilesAndResources,
     /// A real kubectl feature this terminal does not offer.
-    Unsupported(&'static str),
+    Unsupported(String),
     UnexpectedArgs(Vec<String>),
     /// `-o jsonpath` without `=TEMPLATE`.
     MissingTemplate,
@@ -336,8 +347,15 @@ impl fmt::Display for ParseError {
 /// Split a command line like a POSIX shell: whitespace separates words, single and double
 /// quotes group (and are removed), a backslash escapes the next character.
 pub(crate) fn shell_split(input: &str) -> Result<Vec<String>, ParseError> {
+    Ok(shell_split_marked(input)?.into_iter().map(|(word, _)| word).collect())
+}
+
+/// [`shell_split`], also saying which words contain an unquoted wildcard (`*`, `?`, `[`), the
+/// ones a shell would expand against the files.
+pub(crate) fn shell_split_marked(input: &str) -> Result<Vec<(String, bool)>, ParseError> {
     let mut words = Vec::new();
     let mut current = String::new();
+    let mut wildcard = false;
     let mut in_word = false;
     let mut quote: Option<char> = None;
     let mut chars = input.chars();
@@ -358,11 +376,12 @@ pub(crate) fn shell_split(input: &str) -> Result<Vec<String>, ParseError> {
                 }
                 c if c.is_whitespace() => {
                     if in_word {
-                        words.push(std::mem::take(&mut current));
+                        words.push((std::mem::take(&mut current), std::mem::take(&mut wildcard)));
                         in_word = false;
                     }
                 }
                 c => {
+                    wildcard |= matches!(c, '*' | '?' | '[');
                     current.push(c);
                     in_word = true;
                 }
@@ -373,13 +392,19 @@ pub(crate) fn shell_split(input: &str) -> Result<Vec<String>, ParseError> {
         return Err(ParseError::UnterminatedQuote);
     }
     if in_word {
-        words.push(current);
+        words.push((current, wildcard));
     }
     Ok(words)
 }
 
+// The terminal parses through `parse_words` (after wildcard expansion); this is for tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn parse(input: &str) -> Result<Command, ParseError> {
-    let words = shell_split(input)?;
+    parse_words(&shell_split(input)?)
+}
+
+/// Parse a command line already split into words (wildcards expanded).
+pub fn parse_words(words: &[String]) -> Result<Command, ParseError> {
     let mut tokens = words.iter().map(String::as_str);
 
     match tokens.next() {
@@ -389,9 +414,25 @@ pub fn parse(input: &str) -> Result<Command, ParseError> {
         Some(other) => return Err(ParseError::UnknownCommand(other.to_string())),
     }
 
-    let verb = tokens.next().ok_or(ParseError::MissingVerb)?;
-    let rest: Vec<&str> = tokens.collect();
-
+    // `kubectl -n NS VERB ...`: the namespace flag may come before the verb.
+    let mut namespace: Option<String> = None;
+    let mut next = tokens.next();
+    while let Some(token) = next.filter(|t| is_flag(t) && !matches!(*t, "--help" | "-h")) {
+        match take_namespace(token, &mut tokens)? {
+            Some(ns) => namespace = Some(ns),
+            None => return Err(unknown_flag(token)),
+        }
+        next = tokens.next();
+    }
+    let verb = next.ok_or(ParseError::MissingVerb)?;
+    let mut rest: Vec<&str> = tokens.collect();
+    if let Some(ns) = namespace.as_deref() {
+        let takes_namespace = crate::help::flags_of(verb).contains(&"-n");
+        let has_own = rest.iter().any(|a| a.starts_with("-n") || a.starts_with("--namespace"));
+        if takes_namespace && !has_own {
+            rest.extend(["-n", ns]);
+        }
+    }
     if matches!(verb, "--help" | "-h") {
         return Ok(Command::Help(String::new()));
     }
@@ -412,29 +453,81 @@ pub fn parse(input: &str) -> Result<Command, ParseError> {
         "patch" => parse_patch(&rest).map(Command::Patch),
         "explain" => parse_explain(&rest).map(Command::Explain),
         "create" => match rest.first() {
-            Some(sub) if !is_flag(sub) => Err(ParseError::UnknownSubcommand {
-                parent: "create",
-                name: sub.to_string(),
-            }),
+            Some(sub) if !is_flag(sub) => Err(ParseError::Unsupported(format!(
+                "kubectl create {sub} (create objects from a file with kubectl create -f or kubectl apply -f)"
+            ))),
             _ => parse_manifest_args(&rest, false).map(Command::Create),
         },
         "set" => match rest.split_first() {
             Some((&"env", args)) => parse_set_env(args).map(Command::SetEnv),
-            Some((other, _)) => Err(ParseError::UnknownSubcommand {
-                parent: "set",
-                name: other.to_string(),
-            }),
+            Some((other, _)) => Err(unknown_subcommand("set", other, SET_UNSUPPORTED)),
             None => Err(ParseError::MissingSubcommand("set")),
         },
         "rollout" => match rest.split_first() {
             Some((&"restart", args)) => parse_rollout_restart(args).map(Command::RolloutRestart),
-            Some((other, _)) => Err(ParseError::UnknownSubcommand {
-                parent: "rollout",
-                name: other.to_string(),
-            }),
+            Some((other, _)) => Err(unknown_subcommand("rollout", other, ROLLOUT_UNSUPPORTED)),
             None => Err(ParseError::MissingSubcommand("rollout")),
         },
-        other => Err(ParseError::UnknownVerb(other.to_string())),
+        other => Err(unknown_verb(other)),
+    }
+}
+
+/// kubectl commands that exist but this terminal does not offer.
+const UNSUPPORTED_VERBS: &[&str] = &[
+    "alpha",
+    "annotate",
+    "api-resources",
+    "api-versions",
+    "attach",
+    "auth",
+    "autoscale",
+    "certificate",
+    "cluster-info",
+    "completion",
+    "config",
+    "cordon",
+    "cp",
+    "debug",
+    "diff",
+    "drain",
+    "edit",
+    "events",
+    "exec",
+    "expose",
+    "kustomize",
+    "label",
+    "options",
+    "plugin",
+    "port-forward",
+    "proxy",
+    "run",
+    "scale",
+    "taint",
+    "top",
+    "uncordon",
+    "version",
+    "wait",
+];
+const SET_UNSUPPORTED: &[&str] = &["image", "resources", "selector", "serviceaccount", "subject"];
+const ROLLOUT_UNSUPPORTED: &[&str] = &["history", "pause", "resume", "status", "undo"];
+
+/// A verb kubectl has but we do not is "not available"; anything else is just unknown.
+fn unknown_verb(verb: &str) -> ParseError {
+    if UNSUPPORTED_VERBS.contains(&verb) {
+        ParseError::Unsupported(format!("kubectl {verb}"))
+    } else {
+        ParseError::UnknownVerb(verb.to_string())
+    }
+}
+
+fn unknown_subcommand(parent: &'static str, name: &str, unsupported: &[&str]) -> ParseError {
+    if unsupported.contains(&name) {
+        ParseError::Unsupported(format!("kubectl {parent} {name}"))
+    } else {
+        ParseError::UnknownSubcommand {
+            parent,
+            name: name.to_string(),
+        }
     }
 }
 
@@ -454,7 +547,7 @@ fn help_for(verb: &str, rest: &[&str]) -> Result<Command, ParseError> {
         ("set", Some("env")) => "set env".to_string(),
         ("rollout", Some("restart")) => "rollout restart".to_string(),
         (verb, _) if crate::help::is_topic(verb) => verb.to_string(),
-        (verb, _) => return Err(ParseError::UnknownVerb(verb.to_string())),
+        (verb, _) => return Err(unknown_verb(verb)),
     };
     Ok(Command::Help(topic))
 }
@@ -539,29 +632,128 @@ fn take_long<'a>(
         .map(String::from))
 }
 
+/// Long flags real kubectl has (here or on other commands) that this terminal does not offer.
+const UNSUPPORTED_LONG_FLAGS: &[&str] = &[
+    "all",
+    "all-containers",
+    "allow-missing-template-keys",
+    "as",
+    "as-group",
+    "cache-dir",
+    "cascade",
+    "certificate-authority",
+    "chunk-size",
+    "client-certificate",
+    "client-key",
+    "cluster",
+    "context",
+    "dry-run",
+    "field-manager",
+    "field-selector",
+    "filename",
+    "follow",
+    "force-conflicts",
+    "ignore-errors",
+    "ignore-not-found",
+    "insecure-skip-tls-verify",
+    "kubeconfig",
+    "kustomize",
+    "label-columns",
+    "limit-bytes",
+    "match-server-version",
+    "max-log-requests",
+    "output",
+    "overwrite",
+    "password",
+    "pod-running-timeout",
+    "prefix",
+    "profile",
+    "prune",
+    "raw",
+    "recursive",
+    "request-timeout",
+    "save-config",
+    "selector",
+    "server",
+    "server-side",
+    "show-kind",
+    "show-labels",
+    "show-managed-fields",
+    "since",
+    "since-time",
+    "sort-by",
+    "subresource",
+    "template",
+    "timeout",
+    "tls-server-name",
+    "token",
+    "user",
+    "username",
+    "v",
+    "validate",
+    "wait",
+    "watch",
+    "watch-only",
+];
+/// Short flags real kubectl has on commands where this terminal has none.
+const UNSUPPORTED_SHORT_FLAGS: &str = "AefilLoRstvwkp";
+
+/// A flag that did not match. If real kubectl has it, say it is not available here instead of
+/// leaving the player to wonder whether they mistyped it.
 fn unknown_flag(arg: &str) -> ParseError {
-    ParseError::UnknownFlag(arg.to_string())
+    let base = arg.split('=').next().unwrap_or(arg);
+    let real = match base.strip_prefix("--") {
+        Some(long) => UNSUPPORTED_LONG_FLAGS.contains(&long),
+        None => base.chars().nth(1).is_some_and(|c| UNSUPPORTED_SHORT_FLAGS.contains(c)),
+    };
+    if real {
+        ParseError::Unsupported(format!("the flag {base}"))
+    } else {
+        ParseError::UnknownFlag(arg.to_string())
+    }
 }
 
 fn is_flag(arg: &str) -> bool {
     arg.starts_with('-') && arg.len() > 1
 }
 
-/// Positional `TYPE`, `TYPE NAME...` or `TYPE/NAME...` arguments shared by `get` and `describe`.
-#[derive(Default)]
+/// A resource argument that is not a kind this terminal knows: several at once, one real
+/// Kubernetes has but this terminal does not simulate, or not a Kubernetes resource at all.
+pub(crate) fn unsupported_resource(arg: &str) -> ParseError {
+    if arg.contains(',') {
+        ParseError::Unsupported(format!("listing several resource types at once ({arg})"))
+    } else if crate::api::is_unsimulated_resource(arg) {
+        ParseError::Unsupported(format!("the resource type {arg}"))
+    } else {
+        ParseError::UnsupportedResource(arg.to_string())
+    }
+}
+
+/// Positional `TYPE`, `TYPE NAME...` or `TYPE/NAME...` arguments for the commands that act on
+/// the original four kinds.
 struct ResourceArgs {
+    verb: &'static str,
     type_arg: Option<ResourceKind>,
     slash_kind: Option<ResourceKind>,
     names: Vec<String>,
 }
 
 impl ResourceArgs {
+    fn for_verb(verb: &'static str) -> Self {
+        ResourceArgs {
+            verb,
+            type_arg: None,
+            slash_kind: None,
+            names: Vec::new(),
+        }
+    }
+
     fn push(&mut self, arg: &str) -> Result<(), ParseError> {
         if let Some((kind, name)) = arg.split_once('/') {
-            self.slash_kind = Some(ResourceKind::from_arg(kind)?);
+            self.slash_kind = Some(ResourceKind::for_verb(self.verb, kind)?);
             self.names.push(name.to_string());
         } else if self.type_arg.is_none() {
-            self.type_arg = Some(ResourceKind::from_arg(arg)?);
+            self.type_arg = Some(ResourceKind::for_verb(self.verb, arg)?);
         } else {
             self.names.push(arg.to_string());
         }
@@ -593,7 +785,7 @@ impl KindArgs {
     fn resolve(arg: &str) -> Result<&'static str, ParseError> {
         crate::api::kind_for_arg(arg)
             .map(|k| k.kind)
-            .ok_or_else(|| ParseError::UnsupportedResource(arg.to_string()))
+            .ok_or_else(|| unsupported_resource(arg))
     }
 
     fn push(&mut self, arg: &str) -> Result<(), ParseError> {
@@ -676,7 +868,7 @@ fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
 }
 
 fn parse_describe(args: &[&str]) -> Result<DescribeArgs, ParseError> {
-    let mut positional = ResourceArgs::default();
+    let mut positional = ResourceArgs::for_verb("describe");
     let mut namespace: Option<String> = None;
 
     let mut iter = args.iter().copied();
@@ -736,7 +928,7 @@ fn parse_logs(args: &[&str]) -> Result<LogsArgs, ParseError> {
 
     let target = pod.ok_or(ParseError::LogsMissingPod)?;
     let (resource, name) = match target.split_once('/') {
-        Some((kind, name)) => match ResourceKind::from_arg(kind)? {
+        Some((kind, name)) => match ResourceKind::for_verb("logs", kind)? {
             kind @ (ResourceKind::Pod | ResourceKind::Deployment) => (kind, name.to_string()),
             other => return Err(ParseError::LogsUnsupportedTarget(other.plural().to_string())),
         },
@@ -754,7 +946,7 @@ fn parse_logs(args: &[&str]) -> Result<LogsArgs, ParseError> {
 }
 
 fn parse_delete(args: &[&str]) -> Result<Command, ParseError> {
-    let mut positional = ResourceArgs::default();
+    let mut positional = ResourceArgs::for_verb("delete");
     let mut has_positional = false;
     let mut namespace: Option<String> = None;
     let mut immediate = false;
@@ -811,7 +1003,7 @@ fn take_files<'a>(
     files: &mut Vec<String>,
 ) -> Result<bool, ParseError> {
     if arg == "-k" || arg.starts_with("--kustomize") || (arg.starts_with("-k") && !arg.starts_with("--")) {
-        return Err(ParseError::Unsupported("kustomize (-k)"));
+        return Err(ParseError::Unsupported("kustomize (-k)".into()));
     }
     let value = if arg == "-f" {
         flag_value(iter, "-f, --filename")?.to_string()
@@ -827,7 +1019,7 @@ fn take_files<'a>(
     };
     for path in value.split(',').filter(|p| !p.is_empty()) {
         if path == "-" {
-            return Err(ParseError::Unsupported("reading manifests from stdin (-f -)"));
+            return Err(ParseError::Unsupported("reading manifests from stdin (-f -)".into()));
         }
         files.push(path.to_string());
     }
@@ -932,7 +1124,7 @@ fn parse_patch(args: &[&str]) -> Result<PatchArgs, ParseError> {
 }
 
 fn parse_rollout_restart(args: &[&str]) -> Result<RolloutRestartArgs, ParseError> {
-    let mut positional = ResourceArgs::default();
+    let mut positional = ResourceArgs::for_verb("rollout restart");
     let mut namespace: Option<String> = None;
 
     let mut iter = args.iter().copied();
@@ -1022,9 +1214,9 @@ fn parse_set_env(args: &[&str]) -> Result<SetEnvArgs, ParseError> {
         .split_first()
         .ok_or(ParseError::MissingResource("set env on"))?;
     let (resource, name, specs): (ResourceKind, String, &[&str]) = match first.split_once('/') {
-        Some((kind, name)) => (ResourceKind::from_arg(kind)?, name.to_string(), rest),
+        Some((kind, name)) => (ResourceKind::for_verb("set env", kind)?, name.to_string(), rest),
         None => {
-            let resource = ResourceKind::from_arg(first)?;
+            let resource = ResourceKind::for_verb("set env", first)?;
             match rest.split_first() {
                 Some((name, specs)) if !name.contains('=') => (resource, name.to_string(), specs),
                 _ => return Err(ParseError::MissingName),
@@ -1216,7 +1408,7 @@ mod tests {
         assert_eq!(parse("kubectl describe"), Err(ParseError::MissingResource("describe")));
         assert_eq!(
             parse("kubectl describe pod web -o yaml"),
-            Err(ParseError::UnknownFlag("-o".into()))
+            Err(ParseError::Unsupported("the flag -o".into()))
         );
     }
 
@@ -1279,7 +1471,11 @@ mod tests {
             parse("kubectl logs web --tail"),
             Err(ParseError::MissingValue("--tail"))
         );
-        assert_eq!(parse("kubectl logs web -f"), Err(ParseError::UnknownFlag("-f".into())));
+        assert_eq!(
+            parse("kubectl logs web -f"),
+            Err(ParseError::Unsupported("the flag -f".into()))
+        );
+        assert_eq!(parse("kubectl logs web -z"), Err(ParseError::UnknownFlag("-z".into())));
         assert_eq!(
             parse("kubectl logs event/x"),
             Err(ParseError::LogsUnsupportedTarget("events".into()))
@@ -1290,7 +1486,7 @@ mod tests {
         );
         assert_eq!(
             parse("kubectl logs nodes/x"),
-            Err(ParseError::UnsupportedResource("nodes".into()))
+            Err(ParseError::Unsupported("kubectl logs for nodes".into()))
         );
     }
 
@@ -1442,10 +1638,7 @@ mod tests {
         );
         assert_eq!(
             parse("kubectl set image deploy/api x=y"),
-            Err(ParseError::UnknownSubcommand {
-                parent: "set",
-                name: "image".into()
-            })
+            Err(ParseError::Unsupported("kubectl set image".into()))
         );
         assert_eq!(parse("kubectl set"), Err(ParseError::MissingSubcommand("set")));
         assert_eq!(
@@ -1471,10 +1664,7 @@ mod tests {
         assert_eq!(parse("kubectl rollout restart deploy"), Err(ParseError::MissingName));
         assert_eq!(
             parse("kubectl rollout status deploy/api"),
-            Err(ParseError::UnknownSubcommand {
-                parent: "rollout",
-                name: "status".into()
-            })
+            Err(ParseError::Unsupported("kubectl rollout status".into()))
         );
         assert_eq!(parse("kubectl rollout"), Err(ParseError::MissingSubcommand("rollout")));
 
