@@ -1,0 +1,8 @@
+[
+  { "kind": "eval", "command": "kubectl get pods" },
+  { "kind": "eval", "command": "cat case/registry-note.txt" },
+  { "kind": "eval", "command": "kubectl set image deployment/evidence-api evidence-api=registry.example.com/evidence:2.4.1" },
+  { "kind": "eval", "command": "kubectl create secret docker-registry registry-login --docker-server=registry.example.com --docker-username=scanner --docker-password=s3cr3t-badge" },
+  { "kind": "eval", "command": "kubectl patch deployment badge-scanner -p '{\"spec\":{\"template\":{\"spec\":{\"imagePullSecrets\":[{\"name\":\"registry-login\"}]}}}}'" },
+  { "kind": "advance", "seconds": 90 }
+]

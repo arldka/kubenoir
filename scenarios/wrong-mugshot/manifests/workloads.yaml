@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evidence-api
+  namespace: default
+  labels:
+    app: evidence-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: evidence-api
+  template:
+    metadata:
+      labels:
+        app: evidence-api
+    spec:
+      containers:
+      - name: evidence-api
+        image: registry.example.com/evidence:2.4.l
+        ports:
+        - containerPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: badge-scanner
+  namespace: default
+  labels:
+    app: badge-scanner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: badge-scanner
+  template:
+    metadata:
+      labels:
+        app: badge-scanner
+    spec:
+      containers:
+      - name: badge-scanner
+        image: registry.example.com/badge-scanner:1.0

@@ -96,7 +96,16 @@ pub const VERBS: &[Verb] = &[
             ("Describe a pod", "kubectl describe pod web-7d9f8b6c5-x2k4p"),
             ("Describe a deployment", "kubectl describe deployment/web"),
         ],
-        flags: &[NAMESPACE],
+        flags: &[
+            NAMESPACE,
+            flag(
+                Some("-l"),
+                "--selector",
+                "''",
+                true,
+                "Selector (label query) to filter on: =, ==, !=, in, notin, a bare key, !key, joined with commas",
+            ),
+        ],
         sample: "pod x",
     },
     Verb {

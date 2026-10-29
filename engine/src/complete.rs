@@ -424,7 +424,10 @@ mod tests {
         assert_eq!(complete("kubectl logs x -").1.len(), 8);
         assert_eq!(complete("kubectl delete pod x --f").1, ["--filename", "--force"]);
         assert_eq!(complete("kubectl set env deploy/web --l").1, ["--list"]);
-        assert_eq!(complete("kubectl describe pod x -").1, ["--namespace", "-n"]);
+        assert_eq!(
+            complete("kubectl describe pod x -").1,
+            ["--namespace", "--selector", "-l", "-n"]
+        );
     }
 
     #[test]

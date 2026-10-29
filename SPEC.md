@@ -116,7 +116,7 @@ T25|x|probes (http/tcp/exec) + liveness restarts + readiness → endpoints|V18,V
 T26|x|pilot #1 New Badge (namespace)|T9,T14,V20
 T27|x|pilot #3 Changing the Story (pod immutability; `echo-env` app; player edits the pod manifest with vim, then `replace --force`)|T5,T35,T36,T37,V3,V20
 T28|x|pilot #8 Sealed Envelope (secret base64 newline)|T7,T15,V15,V20,V21
-T29|.|pilot #15 Wrong Mugshot (ImagePullBackOff)|T16,V16,V20
+T29|x|pilot #15 Wrong Mugshot (ImagePullBackOff)|T16,V16,V20
 T30|.|pilot #18 Nobody's Answering (selector mismatch)|T19,T20,T22,V20,V21
 T31|.|pilot #20 Out of Jurisdiction (cross-ns DNS; FQDN \| ExternalName both pass)|T20,T23,V9,V21
 T32|.|Job + CronJob controllers, cron parser, time-skip|V17

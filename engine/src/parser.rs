@@ -106,6 +106,8 @@ pub struct DescribeArgs {
     pub kind: &'static str,
     pub names: Vec<String>,
     pub namespace: Option<String>,
+    /// `-l`: only the objects whose labels match.
+    pub selector: Selector,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1498,11 +1500,19 @@ const DESCRIBABLE: &[&str] = &["Pod", "Deployment", "ReplicaSet", "Event", "Name
 fn parse_describe(args: &[&str]) -> Result<DescribeArgs, ParseError> {
     let mut positional = KindArgs::default();
     let mut namespace: Option<String> = None;
+    let mut selector = Selector::default();
+    let parse_selector = |text: &str| Selector::parse(text).map_err(ParseError::InvalidSelector);
 
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
         if let Some(ns) = take_namespace(arg, &mut iter)? {
             namespace = Some(ns);
+        } else if arg == "-l" {
+            selector = parse_selector(flag_value(&mut iter, "-l, --selector")?)?;
+        } else if let Some(value) = take_long(arg, "--selector", &mut iter)? {
+            selector = parse_selector(&value)?;
+        } else if let Some(value) = arg.strip_prefix("-l").filter(|_| !arg.starts_with("--")) {
+            selector = parse_selector(value)?;
         } else if is_flag(arg) {
             return Err(unknown_flag(arg));
         } else {
@@ -1515,7 +1525,12 @@ fn parse_describe(args: &[&str]) -> Result<DescribeArgs, ParseError> {
         let plural = crate::api::info(kind).map_or_else(|| kind.to_string(), |i| i.resource());
         return Err(ParseError::Unsupported(format!("kubectl describe for {plural}")));
     }
-    Ok(DescribeArgs { kind, names, namespace })
+    Ok(DescribeArgs {
+        kind,
+        names,
+        namespace,
+        selector,
+    })
 }
 
 fn parse_logs(args: &[&str]) -> Result<LogsArgs, ParseError> {
@@ -2028,6 +2043,7 @@ mod tests {
                 kind: "Pod",
                 names: names.iter().map(|s| s.to_string()).collect(),
                 namespace: ns.map(String::from),
+                selector: Selector::default(),
             }))
         };
         assert_eq!(parse("kubectl describe pod web"), describe(&["web"], None));

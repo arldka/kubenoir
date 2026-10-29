@@ -307,3 +307,105 @@ mod sealed_envelope {
         assert_eq!(status(&e)["findings"]["found"].as_array().unwrap().len(), 3);
     }
 }
+
+mod wrong_mugshot {
+    use super::*;
+
+    fn engine() -> Engine {
+        common::engine("wrong-mugshot")
+    }
+
+    const GOOD_TAG: &str = "kubectl set image deployment/evidence-api evidence-api=registry.example.com/evidence:2.4.1";
+    const SECRET: &str = "kubectl create secret docker-registry registry-login --docker-server=registry.example.com --docker-username=scanner --docker-password=s3cr3t-badge";
+    const PATCH: &str = r#"kubectl patch deployment badge-scanner -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"registry-login"}]}}}}'"#;
+
+    fn statuses(e: &mut Engine) -> Vec<String> {
+        e.eval("kubectl get pods --no-headers")
+            .lines()
+            .map(|l| l.split_whitespace().nth(2).unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn neither_service_has_a_running_pod_and_the_events_say_why() {
+        let mut e = engine();
+        let s = statuses(&mut e);
+        assert_eq!(s.len(), 3, "{s:?}");
+        assert!(
+            s.iter().all(|s| s == "ImagePullBackOff" || s == "ErrImagePull"),
+            "{s:?}"
+        );
+        let evidence = e.eval("kubectl describe pods -l app=evidence-api");
+        assert!(
+            evidence.contains("registry.example.com/evidence:2.4.l") && evidence.contains("not found"),
+            "{evidence}"
+        );
+        let badge = e.eval("kubectl describe pods -l app=badge-scanner");
+        assert!(badge.contains("authorization failed"), "{badge}");
+        assert!(!solved(&e));
+    }
+
+    #[test]
+    fn fixing_the_tag_and_adding_the_pull_secret_closes_the_case() {
+        let mut e = engine();
+        for command in [GOOD_TAG, SECRET, PATCH] {
+            let out = e.eval(command);
+            assert!(
+                !out.starts_with("error") && !out.starts_with("Error"),
+                "{command}: {out}"
+            );
+        }
+        e.advance(90);
+        assert!(solved(&e), "{:?}", statuses(&mut e));
+    }
+
+    #[test]
+    fn the_same_fixes_made_with_other_commands_also_close_it() {
+        let mut e = engine();
+        e.eval(r#"kubectl patch deployment evidence-api -p '{"spec":{"template":{"spec":{"containers":[{"name":"evidence-api","image":"registry.example.com/evidence:2.4.1"}]}}}}'"#);
+        // A pull secret written as a manifest, with the login as a base64 `auth` pair.
+        let auth = e.eval("echo -n scanner:s3cr3t-badge | base64");
+        let config = format!(r#"{{"auths":{{"registry.example.com":{{"auth":"{auth}"}}}}}}"#);
+        let encoded = e.eval(&format!("echo -n '{config}' | base64")).replace('\n', "");
+        e.write_file(
+            "login.yaml",
+            &format!("apiVersion: v1\nkind: Secret\nmetadata:\n  name: login\ntype: kubernetes.io/dockerconfigjson\ndata:\n  .dockerconfigjson: {encoded}\n"),
+        );
+        assert_eq!(e.eval("kubectl apply -f login.yaml"), "secret/login created");
+        e.eval(&PATCH.replace("registry-login", "login"));
+        e.advance(90);
+        assert!(solved(&e), "{:?}", statuses(&mut e));
+    }
+
+    #[test]
+    fn half_a_fix_or_the_wrong_login_is_not_enough() {
+        let mut only_tag = engine();
+        only_tag.eval(GOOD_TAG);
+        only_tag.advance(120);
+        assert!(!solved(&only_tag));
+
+        let mut wrong_login = engine();
+        for command in [GOOD_TAG, &SECRET.replace("s3cr3t-badge", "guess"), PATCH] {
+            wrong_login.eval(command);
+        }
+        wrong_login.advance(120);
+        assert!(!solved(&wrong_login));
+        assert!(wrong_login
+            .eval("kubectl describe pods -l app=badge-scanner")
+            .contains("authorization failed"));
+    }
+
+    #[test]
+    fn the_findings_are_discoverable() {
+        let mut e = engine();
+        let name = e
+            .eval("kubectl get pods -o name")
+            .lines()
+            .map(|l| l.trim_start_matches("pod/").to_string())
+            .find(|n| n.starts_with("evidence-api-"))
+            .unwrap();
+        e.eval(&format!("kubectl describe pod {name}"));
+        e.eval("cat case/registry-note.txt");
+        assert_eq!(status(&e)["findings"]["found"].as_array().unwrap().len(), 2);
+    }
+}

@@ -222,6 +222,7 @@ fn describe_each(
     let mut errors = Vec::new();
     if args.names.is_empty() {
         manifests = store.list(kind, namespace)?;
+        manifests.retain(|m| args.selector.matches(m));
         if manifests.is_empty() {
             return Ok(if namespace.is_empty() {
                 "No resources found".to_string()

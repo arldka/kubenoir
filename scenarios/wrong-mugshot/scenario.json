@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 2,
+  "id": "wrong-mugshot",
+  "title": "Wrong Mugshot",
+  "briefing": "Two services were rolled out this morning and neither has a single running pod. evidence-api is stuck on its first start. badge-scanner is stuck too, for a completely different reason. Ops left a handover note (case/registry-note.txt). Both pods should be up, and both images must be the ones the registry actually has.",
+  "objective": "Get evidence-api (2 pods) and badge-scanner (1 pod) running.",
+  "hints": [
+    "Look at what the pods say about themselves: the status column is not the whole story, and the events say which image could not be pulled and why.",
+    "evidence-api: 'not found' means the registry has no such tag. Read the tag in the Deployment and compare it with the release in the handover note, character by character.",
+    "badge-scanner: 'authorization failed' means the registry wants a login. A docker-registry Secret holds one, and the pod template must name it under imagePullSecrets.",
+    "`kubectl set image` fixes a tag; `kubectl create secret docker-registry` plus `kubectl patch deployment` adds the pull secret."
+  ],
+  "success": {
+    "stableSeconds": 15,
+    "assert": [
+      {
+        "label": "evidence-api has both pods available",
+        "select": { "kind": "Deployment", "name": "evidence-api" },
+        "each": [
+          { "path": "status.availableReplicas", "equals": 2 },
+          { "path": "spec.replicas", "equals": 2 }
+        ]
+      },
+      {
+        "label": "badge-scanner has its pod available",
+        "select": { "kind": "Deployment", "name": "badge-scanner" },
+        "each": [
+          { "path": "status.availableReplicas", "equals": 1 },
+          { "path": "spec.replicas", "equals": 1 }
+        ]
+      },
+      {
+        "label": "every pod is running",
+        "select": { "kind": "Pod" },
+        "count": { "exactly": 3 },
+        "each": [{ "path": "status.phase", "equals": "Running" }]
+      }
+    ],
+    "constraints": [
+      {
+        "label": "evidence-api was not deleted",
+        "forbid": { "verb": "delete", "resource": "deployments", "name": "evidence-api" }
+      },
+      {
+        "label": "badge-scanner was not deleted",
+        "forbid": { "verb": "delete", "resource": "deployments", "name": "badge-scanner" }
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "not-found",
+      "clue": "evidence-api cannot pull registry.example.com/evidence:2.4.l: 'not found' means that tag does not exist. The release is 2.4.1, with a digit one at the end, not a letter L.",
+      "when": { "command": { "verb": "describe", "resource": "pods", "name": "evidence-api*" } }
+    },
+    {
+      "id": "denied",
+      "clue": "badge-scanner's image exists but the registry refuses the pull: 'authorization failed'. It needs credentials, passed as an image pull secret.",
+      "when": { "command": { "verb": "describe", "resource": "pods", "name": "badge-scanner*" } }
+    },
+    {
+      "id": "note",
+      "clue": "The handover note has the release (2.4.1) and the login for the private registry.",
+      "when": { "command": { "verb": "cat", "name": "case/registry-note.txt" } }
+    }
+  ],
+  "imageCatalog": "closed",
+  "images": {
+    "registry.example.com/evidence:2.4.1": { "pullSeconds": 3, "app": "nginx@0.1.0" },
+    "registry.example.com/badge-scanner:1.0": {
+      "pullSeconds": 3,
+      "app": "nginx@0.1.0",
+      "auth": { "username": "scanner", "password": "s3cr3t-badge" }
+    }
+  },
+  "files": ["case/registry-note.txt"],
+  "cluster": {
+    "startedAt": "2026-10-27T08:55:00Z",
+    "now": "2026-10-27T09:00:00Z",
+    "manifests": ["manifests/nodes.yaml", "manifests/workloads.yaml"]
+  }
+}

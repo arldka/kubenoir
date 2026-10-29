@@ -1,0 +1,7 @@
+Ops handover, registry notes
+
+  public images .... registry.example.com/evidence:<version>
+  private images ... registry.example.com/badge-scanner:<version>
+                     login: user "scanner", password "s3cr3t-badge"
+
+The evidence-api release we shipped is 2.4.1.
