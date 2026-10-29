@@ -1,0 +1,23 @@
+# Template container apps. Each member is a small real program built for `wasm32-wasip1`; the engine
+# embeds the binaries and runs one per container start (see `engine/src/apps/`). Scenarios pick a
+# template per image and configure it; see `docs/apps.md`.
+[workspace]
+resolver = "2"
+members = ["kit", "db-client", "nginx", "script"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+kit = { path = "kit" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

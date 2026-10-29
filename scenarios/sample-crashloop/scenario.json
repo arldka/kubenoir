@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "id": "sample-crashloop",
+  "title": "The Payments Pod That Wouldn't Stay Up",
+  "cluster": {
+    "now": "2026-10-27T18:30:00Z",
+    "pods": [
+      {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "web-7d9f8b6c5-x2k4p",
+          "namespace": "default",
+          "labels": { "app": "web", "pod-template-hash": "7d9f8b6c5" },
+          "creationTimestamp": "2026-10-24T18:30:00Z"
+        },
+        "spec": {
+          "nodeName": "worker-1",
+          "containers": [{ "name": "web", "image": "nginx:1.27" }]
+        },
+        "status": {
+          "phase": "Running",
+          "hostIP": "192.168.49.2",
+          "podIP": "10.244.1.12",
+          "containerStatuses": [
+            {
+              "name": "web",
+              "ready": true,
+              "restartCount": 0,
+              "image": "nginx:1.27",
+              "imageID": "docker.io/library/nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+              "state": { "running": { "startedAt": "2026-10-24T18:30:05Z" } }
+            }
+          ]
+        }
+      },
+      {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "web-7d9f8b6c5-m8q7z",
+          "namespace": "default",
+          "labels": { "app": "web", "pod-template-hash": "7d9f8b6c5" },
+          "creationTimestamp": "2026-10-24T18:30:00Z"
+        },
+        "spec": {
+          "nodeName": "worker-2",
+          "containers": [{ "name": "web", "image": "nginx:1.27" }]
+        },
+        "status": {
+          "phase": "Running",
+          "hostIP": "192.168.49.3",
+          "podIP": "10.244.2.7",
+          "containerStatuses": [
+            {
+              "name": "web",
+              "ready": true,
+              "restartCount": 0,
+              "image": "nginx:1.27",
+              "imageID": "docker.io/library/nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+              "state": { "running": { "startedAt": "2026-10-24T18:30:06Z" } }
+            }
+          ]
+        }
+      },
+      {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "payments-api-5c7d4f9b8-9hjv2",
+          "namespace": "default",
+          "labels": { "app": "payments-api", "pod-template-hash": "5c7d4f9b8" },
+          "creationTimestamp": "2026-10-27T17:43:00Z"
+        },
+        "spec": {
+          "nodeName": "worker-2",
+          "containers": [{ "name": "payments-api", "image": "registry.example.com/payments-api:2.4.1" }]
+        },
+        "status": {
+          "phase": "Running",
+          "hostIP": "192.168.49.3",
+          "podIP": "10.244.2.9",
+          "containerStatuses": [
+            {
+              "name": "payments-api",
+              "ready": false,
+              "restartCount": 14,
+              "image": "registry.example.com/payments-api:2.4.1",
+              "imageID": "registry.example.com/payments-api@sha256:0000000000000000000000000000000000000000000000000000000000000002",
+              "state": { "waiting": { "reason": "CrashLoopBackOff", "message": "back-off 5m0s restarting failed container=payments-api pod=payments-api-5c7d4f9b8-9hjv2_default" } },
+              "lastState": { "terminated": { "exitCode": 1, "reason": "Error", "startedAt": "2026-10-27T18:27:10Z", "finishedAt": "2026-10-27T18:27:11Z" } }
+            }
+          ]
+        }
+      },
+      {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "coredns-6d8c4cb4d-5fwtn",
+          "namespace": "kube-system",
+          "labels": { "k8s-app": "kube-dns" },
+          "creationTimestamp": "2026-10-15T18:30:00Z"
+        },
+        "spec": {
+          "nodeName": "control-plane",
+          "containers": [{ "name": "coredns", "image": "registry.k8s.io/coredns/coredns:v1.12.0" }]
+        },
+        "status": {
+          "phase": "Running",
+          "hostIP": "192.168.49.1",
+          "podIP": "10.244.0.3",
+          "containerStatuses": [
+            {
+              "name": "coredns",
+              "ready": true,
+              "restartCount": 1,
+              "image": "registry.k8s.io/coredns/coredns:v1.12.0",
+              "imageID": "registry.k8s.io/coredns/coredns@sha256:0000000000000000000000000000000000000000000000000000000000000003",
+              "state": { "running": { "startedAt": "2026-10-20T09:00:00Z" } }
+            }
+          ]
+        }
+      },
+      {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "etcd-control-plane",
+          "namespace": "kube-system",
+          "labels": { "component": "etcd", "tier": "control-plane" },
+          "creationTimestamp": "2026-10-15T18:30:00Z"
+        },
+        "spec": {
+          "nodeName": "control-plane",
+          "containers": [{ "name": "etcd", "image": "registry.k8s.io/etcd:3.6.4-0" }]
+        },
+        "status": {
+          "phase": "Running",
+          "hostIP": "192.168.49.1",
+          "podIP": "192.168.49.1",
+          "containerStatuses": [
+            {
+              "name": "etcd",
+              "ready": true,
+              "restartCount": 0,
+              "image": "registry.k8s.io/etcd:3.6.4-0",
+              "imageID": "registry.k8s.io/etcd@sha256:0000000000000000000000000000000000000000000000000000000000000004",
+              "state": { "running": { "startedAt": "2026-10-15T18:31:00Z" } }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

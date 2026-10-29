@@ -1,0 +1,7 @@
+# Pin the toolchain so every machine (and CI) builds the engine the same way. rustup installs the
+# WASM targets (the engine's, and wasip1 for the template apps in `apps/`) and the lint/format
+# tools automatically the first time cargo runs here.
+[toolchain]
+channel = "stable"
+targets = ["wasm32-unknown-unknown", "wasm32-wasip1"]
+components = ["clippy", "rustfmt"]

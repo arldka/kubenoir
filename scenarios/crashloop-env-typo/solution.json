@@ -1,0 +1,7 @@
+[
+  { "kind": "eval", "command": "kubectl get pods" },
+  { "kind": "eval", "command": "kubectl logs deploy/payments-api" },
+  { "kind": "eval", "command": "kubectl describe deploy payments-api" },
+  { "kind": "eval", "command": "kubectl set env deployment/payments-api DATABASE_URL=postgres://payments@postgres.default.svc.cluster.local:5432/payments DATABSE_URL-" },
+  { "kind": "advance", "seconds": 60 }
+]
