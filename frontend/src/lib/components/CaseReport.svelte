@@ -146,6 +146,7 @@
 				<a
 					class="rounded border border-ok bg-ok px-4 py-1.5 font-typewriter text-paper"
 					href={next.href}
+					data-sveltekit-reload
 					data-testid="next-case"
 				>
 					Next case: {next.title}

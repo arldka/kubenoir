@@ -34,6 +34,7 @@
 						<a
 							class="underline-offset-2 hover:underline {c.id === currentId ? 'font-bold' : ''}"
 							href={href(c.id)}
+							data-sveltekit-reload
 							aria-current={c.id === currentId ? 'page' : undefined}>{c.title}</a
 						>
 					{/if}

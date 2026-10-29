@@ -326,10 +326,13 @@ test('playing again after the time ran out starts a fresh case', async ({ page }
 	await expect(screen(page)).not.toContainText('sleep 15m');
 });
 
+/** The title of the case being played (the case file's heading, not the sidebar's list). */
+const caseTitle = (page: Page) => page.getByRole('heading', { level: 1 });
+
 test('the campaign opens with the first case, locks the rest, and leads on when a case is solved', async ({ page }) => {
 	await page.goto('/');
 	await expect(page.locator('.xterm-rows')).toContainText('detective@cluster:~$');
-	await expect(page.getByText('A Desk of Your Own').first()).toBeVisible();
+	await expect(caseTitle(page)).toHaveText('A Desk of Your Own');
 
 	const list = page.getByTestId('case-list');
 	await expect(list.locator('li[data-state="current"]')).toHaveCount(1);
@@ -342,12 +345,68 @@ test('the campaign opens with the first case, locks the rest, and leads on when 
 	await expect(page.getByTestId('report-outcome')).toHaveText('Case closed', { timeout: 15_000 });
 	await page.getByTestId('next-case').click();
 
+	// A different case is really loaded: its file, its terminal and a fresh, closed report.
 	await expect(page).toHaveURL(/\?case=crashloop-env-typo/);
-	await expect(page.getByText("The Payments Pod That Wouldn't Stay Up").first()).toBeVisible();
-	await expect(page.getByTestId('case-list').locator('li').first()).toHaveAttribute('data-state', 'done');
-	await expect(page.getByTestId('case-list').locator('li[data-state="current"]')).toContainText("Payments Pod");
+	await expect(caseTitle(page)).toHaveText("The Payments Pod That Wouldn't Stay Up");
+	await expect(screen(page)).toContainText("CASE FILE: The Payments Pod That Wouldn't Stay Up");
+	await expect(screen(page)).not.toContainText('kubectl create namespace homicide');
+	await expect(page.getByTestId('report-outcome')).toBeHidden();
+	await expect(page.getByTestId('findings-counter')).toContainText('0 / 3');
+	await expect(page.getByTestId('time-left')).toHaveText(/^1[45]:\d\d$/);
+	await page.locator('.xterm').click();
+	await run(page, 'kubectl get pods');
+	await expect(screen(page)).toContainText('CrashLoopBackOff');
+
+	const states = page.getByTestId('case-list').locator('li');
+	await expect(states.nth(0)).toHaveAttribute('data-state', 'done');
+	await expect(states.nth(1)).toHaveAttribute('data-state', 'current');
 
 	// Reopening the game continues where the player left off.
 	await page.goto('/');
-	await expect(page.getByText("The Payments Pod That Wouldn't Stay Up").first()).toBeVisible();
+	await expect(caseTitle(page)).toHaveText("The Payments Pod That Wouldn't Stay Up");
+});
+
+test('the case list links open the case that was clicked, and a finished case can be replayed', async ({ page }) => {
+	await page.addInitScript(() => {
+		if (!localStorage.getItem('k8sd:progress')) {
+			localStorage.setItem('k8sd:progress', JSON.stringify(['new-badge', 'crashloop-env-typo']));
+		}
+	});
+	await page.goto('/');
+	// Two cases are done, so the third is where the game starts.
+	await expect(caseTitle(page)).toHaveText('Changing the Story');
+	const list = page.getByTestId('case-list');
+	await expect(list.locator('li[data-state="done"]')).toHaveCount(2);
+	await expect(list.locator('li[data-state="current"]')).toContainText('Changing the Story');
+	await expect(list.locator('li[data-state="locked"]')).toHaveCount(4);
+
+	await list.getByRole('link', { name: 'A Desk of Your Own' }).click();
+	await expect(page).toHaveURL(/\?case=new-badge/);
+	await expect(caseTitle(page)).toHaveText('A Desk of Your Own');
+	await expect(screen(page)).toContainText('CASE FILE: A Desk of Your Own');
+
+	await list.getByRole('link', { name: 'Changing the Story' }).click();
+	await expect(caseTitle(page)).toHaveText('Changing the Story');
+	await expect(screen(page)).toContainText('CASE FILE: Changing the Story');
+});
+
+test('there is no next case after the last one, or after running out of time', async ({ page }) => {
+	await page.addInitScript(() => {
+		localStorage.setItem(
+			'k8sd:progress',
+			JSON.stringify(['new-badge', 'crashloop-env-typo', 'changing-the-story', 'wrong-mugshot', 'sealed-envelope', 'nobody-answering'])
+		);
+	});
+	await page.goto('/');
+	await expect(caseTitle(page)).toHaveText('Out of Jurisdiction');
+	await page.locator('.xterm').click();
+	await run(page, 'sleep 15m');
+	await expect(page.getByTestId('report-outcome')).toHaveText("Time's up");
+	await expect(page.getByTestId('next-case')).toHaveCount(0);
+
+	await page.goto('/?case=new-badge');
+	await page.locator('.xterm').click();
+	await run(page, 'sleep 15m');
+	await expect(page.getByTestId('report-outcome')).toHaveText("Time's up");
+	await expect(page.getByTestId('next-case')).toHaveCount(0);
 });
