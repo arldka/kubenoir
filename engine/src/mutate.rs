@@ -257,6 +257,26 @@ pub fn delete_object(
             }
             env.store.delete(kind, namespace, name)?;
         }
+        "Job" => {
+            let uid = manifest["metadata"]["uid"].as_str().unwrap_or_default().to_string();
+            delete_owned_pods(env, namespace, &uid, immediate)?;
+            env.store.delete(kind, namespace, name)?;
+            env.store.purge_pod_state(namespace, &format!("job/{name}"))?;
+        }
+        "CronJob" => {
+            let uid = manifest["metadata"]["uid"].as_str().unwrap_or_default().to_string();
+            for job in env.store.list("Job", namespace)? {
+                let owned = job["metadata"]["ownerReferences"]
+                    .as_array()
+                    .is_some_and(|o| o.iter().any(|r| r["uid"] == uid.as_str()));
+                if owned {
+                    let job_name = job["metadata"]["name"].as_str().unwrap_or_default().to_string();
+                    delete_object(env, "Job", namespace, &job_name, immediate)?;
+                }
+            }
+            env.store.delete(kind, namespace, name)?;
+            env.store.purge_pod_state(namespace, &format!("cronjob/{name}"))?;
+        }
         _ => {
             env.store.delete(kind, namespace, name)?;
         }

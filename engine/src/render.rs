@@ -1,6 +1,7 @@
 //! Output printers for Pods: kubectl-style tables, `-o wide`, `-o name`, `-o json`, `-o yaml`.
 
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
+use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Event, Namespace, Node, Pod, PodTemplateSpec, Secret, Service};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
 use k8s_openapi::api::networking::v1::NetworkPolicy;
@@ -161,6 +162,8 @@ fn table(info: &KindInfo, items: &[Value], wide: bool, now: &Time) -> Table {
         "Namespace" => namespace_table(&typed::<Namespace>(items), now),
         "Node" => node_table(&typed::<Node>(items), wide, now),
         "Endpoints" => endpoints_table(&typed::<Endpoints>(items), now),
+        "Job" => job_table(&typed::<Job>(items), wide, now),
+        "CronJob" => cronjob_table(&typed::<CronJob>(items), wide, now),
         "NetworkPolicy" => policy_table(&typed::<NetworkPolicy>(items), now),
         "EndpointSlice" => slice_table(&typed::<EndpointSlice>(items), now),
         _ => service_table(&typed::<Service>(items), wide, now),
@@ -435,6 +438,121 @@ fn configmap_table(items: &[ConfigMap], now: &Time) -> Table {
         })
         .collect();
     Table::new(vec!["NAME", "DATA", "AGE"], rows, items.iter().map(|c| &c.metadata))
+}
+
+fn job_table(items: &[Job], wide: bool, now: &Time) -> Table {
+    let mut headers = vec!["NAME", "STATUS", "COMPLETIONS", "DURATION", "AGE"];
+    if wide {
+        headers.extend(["CONTAINERS", "IMAGES", "SELECTOR"]);
+    }
+    let rows = items
+        .iter()
+        .map(|job| {
+            let status = job.status.as_ref();
+            let has = |kind: &str| {
+                status
+                    .and_then(|s| s.conditions.as_ref())
+                    .is_some_and(|c| c.iter().any(|c| c.type_ == kind && c.status == "True"))
+            };
+            let state = if has("Complete") {
+                "Complete"
+            } else if has("Failed") {
+                "Failed"
+            } else if job.spec.as_ref().and_then(|s| s.suspend) == Some(true) {
+                "Suspended"
+            } else {
+                "Running"
+            };
+            let completions = job.spec.as_ref().and_then(|s| s.completions).unwrap_or(1);
+            let started = status.and_then(|s| s.start_time.as_ref()).map(clock::secs);
+            let ended = status.and_then(|s| s.completion_time.as_ref()).map(clock::secs);
+            let duration = match (started, ended) {
+                (Some(start), Some(end)) => human_duration(end - start),
+                (Some(start), None) if state == "Running" => human_duration(clock::secs(now) - start),
+                _ => "<none>".into(),
+            };
+            let mut row = vec![
+                job.metadata.name.clone().unwrap_or_default(),
+                state.to_string(),
+                format!("{}/{completions}", status.and_then(|s| s.succeeded).unwrap_or(0)),
+                duration,
+                object_age(&job.metadata, now),
+            ];
+            if wide {
+                let containers = job
+                    .spec
+                    .as_ref()
+                    .and_then(|s| s.template.spec.as_ref())
+                    .map(|p| p.containers.as_slice())
+                    .unwrap_or_default();
+                row.push(containers.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(","));
+                row.push(
+                    containers
+                        .iter()
+                        .map(|c| c.image.clone().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+                let uid = job.metadata.uid.clone().unwrap_or_default();
+                row.push(format!("batch.kubernetes.io/controller-uid={uid}"));
+            }
+            row
+        })
+        .collect();
+    Table::new(headers, rows, items.iter().map(|j| &j.metadata))
+}
+
+fn cronjob_table(items: &[CronJob], wide: bool, now: &Time) -> Table {
+    let mut headers = vec![
+        "NAME",
+        "SCHEDULE",
+        "TIMEZONE",
+        "SUSPEND",
+        "ACTIVE",
+        "LAST SCHEDULE",
+        "AGE",
+    ];
+    if wide {
+        headers.extend(["CONTAINERS", "IMAGES", "SELECTOR"]);
+    }
+    let rows = items
+        .iter()
+        .map(|cj| {
+            let spec = Some(&cj.spec);
+            let status = cj.status.as_ref();
+            let mut row = vec![
+                cj.metadata.name.clone().unwrap_or_default(),
+                spec.map(|s| s.schedule.clone()).unwrap_or_default(),
+                spec.and_then(|s| s.time_zone.clone())
+                    .unwrap_or_else(|| "<none>".into()),
+                spec.and_then(|s| s.suspend).unwrap_or(false).to_string(),
+                status.and_then(|s| s.active.as_ref()).map_or(0, Vec::len).to_string(),
+                status.and_then(|s| s.last_schedule_time.as_ref()).map_or_else(
+                    || "<none>".into(),
+                    |t| human_duration(clock::secs(now) - clock::secs(t)),
+                ),
+                object_age(&cj.metadata, now),
+            ];
+            if wide {
+                let containers = spec
+                    .and_then(|s| s.job_template.spec.as_ref())
+                    .and_then(|j| j.template.spec.as_ref())
+                    .map(|p| p.containers.as_slice())
+                    .unwrap_or_default();
+                row.push(containers.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(","));
+                row.push(
+                    containers
+                        .iter()
+                        .map(|c| c.image.clone().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+                row.push("<none>".into());
+            }
+            row
+        })
+        .collect();
+    Table::new(headers, rows, items.iter().map(|c| &c.metadata))
 }
 
 fn policy_table(items: &[NetworkPolicy], now: &Time) -> Table {

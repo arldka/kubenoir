@@ -6,8 +6,10 @@
 
 pub mod config;
 mod container_env;
+mod cronjob;
 mod deployment;
 mod images;
+mod job;
 mod kubelet;
 mod namespace;
 mod pods;
@@ -56,7 +58,9 @@ fn pass(env: &Env<'_>) -> Result<bool, StoreError> {
     let scheduled = scheduler::pass(env)?;
     let ran = kubelet::pass(env)?;
     let services = service::pass(env)?;
-    Ok(namespaces || deployments || replica_sets || scheduled || ran || services)
+    let cron = cronjob::pass(env)?;
+    let jobs = job::pass(env)?;
+    Ok(namespaces || deployments || replica_sets || scheduled || ran || services || cron || jobs)
 }
 
 /// `(namespace, name, uid)` of a pod, with the defaults the API server would apply.

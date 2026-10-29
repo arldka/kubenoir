@@ -23,6 +23,8 @@ fn root_schema(kind: &str) -> Option<Value> {
         "Pod" => generator.into_root_schema_for::<Pod>(),
         "ReplicaSet" => generator.into_root_schema_for::<ReplicaSet>(),
         "Secret" => generator.into_root_schema_for::<Secret>(),
+        "Job" => generator.into_root_schema_for::<k8s_openapi::api::batch::v1::Job>(),
+        "CronJob" => generator.into_root_schema_for::<k8s_openapi::api::batch::v1::CronJob>(),
         "Endpoints" => generator.into_root_schema_for::<Endpoints>(),
         "EndpointSlice" => generator.into_root_schema_for::<k8s_openapi::api::discovery::v1::EndpointSlice>(),
         "NetworkPolicy" => generator.into_root_schema_for::<k8s_openapi::api::networking::v1::NetworkPolicy>(),

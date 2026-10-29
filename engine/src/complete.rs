@@ -283,7 +283,9 @@ fn containers_of(store: &ClusterStore, namespace: &str, reference: &str) -> Resu
     };
     let containers = match kind {
         ResourceKind::Pod => &manifest["spec"]["containers"],
-        ResourceKind::Deployment | ResourceKind::ReplicaSet => &manifest["spec"]["template"]["spec"]["containers"],
+        ResourceKind::Deployment | ResourceKind::ReplicaSet | ResourceKind::Job => {
+            &manifest["spec"]["template"]["spec"]["containers"]
+        }
         ResourceKind::Event => return Ok(Vec::new()),
     };
     Ok(containers

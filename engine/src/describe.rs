@@ -32,6 +32,12 @@ pub fn describe(args: &DescribeArgs, store: &ClusterStore, now: i64) -> Result<S
             let owned = owned_replica_sets(store, namespace, deployment.metadata.uid.as_deref().unwrap_or_default())?;
             Ok(describe_deployment(&deployment, &owned, events, now))
         }),
+        "Job" => describe_each(args, store, namespace, |manifest, events| {
+            Ok(describe_job(&serde_json::from_value(manifest)?, events, now))
+        }),
+        "CronJob" => describe_each(args, store, namespace, |manifest, events| {
+            Ok(describe_cronjob(&serde_json::from_value(manifest)?, events, now))
+        }),
         "Service" => describe_each(args, store, namespace, |manifest, events| {
             let endpoints = store
                 .get(
@@ -70,6 +76,149 @@ fn describe_namespace(namespace: &k8s_openapi::api::core::v1::Namespace) -> Stri
     out.push("No resource quota.".into());
     out.push(String::new());
     out.push("No LimitRange resource.".into());
+    out.join("\n")
+}
+
+fn template_lines(out: &mut Vec<String>, template: &k8s_openapi::api::core::v1::PodTemplateSpec) {
+    out.push("Pod Template:".into());
+    let labels = template.metadata.as_ref().and_then(|m| m.labels.as_ref());
+    push_block(out, 2, &[("Labels:".into(), map_lines(labels, "="))]);
+    out.push("  Containers:".into());
+    for container in template
+        .spec
+        .as_ref()
+        .map(|s| s.containers.as_slice())
+        .unwrap_or_default()
+    {
+        out.push(format!("   {}:", container.name));
+        container_lines(out, container, None);
+    }
+    out.push(kv(2, "Volumes:", NONE, 2 + 10 + 4));
+}
+
+fn stamp(time: Option<&Time>) -> String {
+    time.map_or_else(|| NONE.to_string(), long_time)
+}
+
+fn describe_job(job: &k8s_openapi::api::batch::v1::Job, events: &[Event], now: i64) -> String {
+    let (spec, status) = (job.spec.as_ref(), job.status.as_ref());
+    let meta = &job.metadata;
+    let n = |v: Option<i32>, default: i32| v.unwrap_or(default).to_string();
+    let uid = meta.uid.clone().unwrap_or_default();
+    let mut rows = vec![
+        ("Name:".to_string(), vec![meta.name.clone().unwrap_or_default()]),
+        (
+            "Namespace:".into(),
+            vec![meta.namespace.clone().unwrap_or_else(|| DEFAULT_NAMESPACE.into())],
+        ),
+        (
+            "Selector:".into(),
+            vec![format!("batch.kubernetes.io/controller-uid={uid}")],
+        ),
+        ("Labels:".into(), map_lines(meta.labels.as_ref(), "=")),
+        ("Annotations:".into(), map_lines(meta.annotations.as_ref(), ": ")),
+        ("Parallelism:".into(), vec![n(spec.and_then(|s| s.parallelism), 1)]),
+        ("Completions:".into(), vec![n(spec.and_then(|s| s.completions), 1)]),
+        ("Completion Mode:".into(), vec!["NonIndexed".into()]),
+        (
+            "Suspend:".into(),
+            vec![spec.and_then(|s| s.suspend).unwrap_or(false).to_string()],
+        ),
+        ("Backoff Limit:".into(), vec![n(spec.and_then(|s| s.backoff_limit), 6)]),
+        (
+            "Start Time:".into(),
+            vec![stamp(status.and_then(|s| s.start_time.as_ref()))],
+        ),
+    ];
+    if let Some(done) = status.and_then(|s| s.completion_time.as_ref()) {
+        rows.push(("Completed At:".into(), vec![long_time(done)]));
+        if let Some(start) = status.and_then(|s| s.start_time.as_ref()) {
+            rows.push((
+                "Duration:".into(),
+                vec![crate::render::human_duration(clock::secs(done) - clock::secs(start))],
+            ));
+        }
+    }
+    let count = |v: Option<i32>| v.unwrap_or(0);
+    rows.push((
+        "Pods Statuses:".into(),
+        vec![format!(
+            "{} Active ({} Ready) / {} Succeeded / {} Failed",
+            count(status.and_then(|s| s.active)),
+            count(status.and_then(|s| s.ready)),
+            count(status.and_then(|s| s.succeeded)),
+            count(status.and_then(|s| s.failed))
+        )],
+    ));
+    let mut out = Vec::new();
+    push_block(&mut out, 0, &rows);
+    if let Some(spec) = spec {
+        template_lines(&mut out, &spec.template);
+    }
+    if events.is_empty() {
+        out.push(kv(0, "Events:", NONE, 18));
+    }
+    out.extend(events_section(events, now));
+    out.join("\n")
+}
+
+fn describe_cronjob(cj: &k8s_openapi::api::batch::v1::CronJob, events: &[Event], now: i64) -> String {
+    let (spec, status) = (&cj.spec, cj.status.as_ref());
+    let meta = &cj.metadata;
+    let active: Vec<String> = status
+        .and_then(|s| s.active.as_ref())
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.name.clone())
+        .collect();
+    let rows = vec![
+        ("Name:".to_string(), vec![meta.name.clone().unwrap_or_default()]),
+        (
+            "Namespace:".into(),
+            vec![meta.namespace.clone().unwrap_or_else(|| DEFAULT_NAMESPACE.into())],
+        ),
+        ("Labels:".into(), map_lines(meta.labels.as_ref(), "=")),
+        ("Annotations:".into(), map_lines(meta.annotations.as_ref(), ": ")),
+        ("Schedule:".into(), vec![spec.schedule.clone()]),
+        (
+            "Concurrency Policy:".into(),
+            vec![spec.concurrency_policy.clone().unwrap_or_else(|| "Allow".into())],
+        ),
+        ("Suspend:".into(), vec![spec.suspend.unwrap_or(false).to_string()]),
+        (
+            "Successful Job History Limit:".into(),
+            vec![spec.successful_jobs_history_limit.unwrap_or(3).to_string()],
+        ),
+        (
+            "Failed Job History Limit:".into(),
+            vec![spec.failed_jobs_history_limit.unwrap_or(1).to_string()],
+        ),
+        ("Starting Deadline Seconds:".into(), vec!["<unset>".into()]),
+    ];
+    let mut out = Vec::new();
+    push_block(&mut out, 0, &rows);
+    if let Some(template) = spec.job_template.spec.as_ref() {
+        template_lines(&mut out, &template.template);
+    }
+    let tail = vec![
+        (
+            "Last Schedule Time:".to_string(),
+            vec![stamp(status.and_then(|s| s.last_schedule_time.as_ref()))],
+        ),
+        (
+            "Active Jobs:".into(),
+            vec![if active.is_empty() {
+                NONE.to_string()
+            } else {
+                active.join(", ")
+            }],
+        ),
+    ];
+    push_block(&mut out, 0, &tail);
+    if events.is_empty() {
+        out.push(kv(0, "Events:", NONE, 18));
+    }
+    out.extend(events_section(events, now));
     out.join("\n")
 }
 

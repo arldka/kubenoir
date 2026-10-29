@@ -481,6 +481,8 @@ fn matches_command(matcher: &CommandMatcher, command: &Command, touched: &[Touch
             let created = match a.object {
                 CreateObject::Namespace => "Namespace",
                 CreateObject::Deployment { .. } => "Deployment",
+                CreateObject::Job { .. } => "Job",
+                CreateObject::CronJob { .. } => "CronJob",
                 CreateObject::ConfigMap { .. } => "ConfigMap",
                 CreateObject::Secret { .. } | CreateObject::DockerRegistrySecret { .. } => "Secret",
             };
@@ -1083,7 +1085,7 @@ mod tests {
         let err = rules(json!({"success": {"assert": [{"label": "a", "select": {"kind": "Pods"}}]}})).unwrap_err();
         assert!(
             err.contains(
-                "(expected ConfigMap, Deployment, Endpoints, EndpointSlice, Event, Namespace, NetworkPolicy, Node, Pod"
+                "(expected ConfigMap, CronJob, Deployment, Endpoints, EndpointSlice, Event, Job, Namespace, NetworkPolicy, Node, Pod"
             ),
             "{err}"
         );

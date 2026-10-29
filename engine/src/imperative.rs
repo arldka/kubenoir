@@ -145,6 +145,15 @@ fn collect_data(
     Ok(data)
 }
 
+/// The pod a Job or CronJob made by `kubectl create` runs once and does not restart.
+fn job_pod_spec(name: &str, image: &str, command: &[String]) -> serde_json::Value {
+    let mut container = json!({"name": name, "image": image});
+    if !command.is_empty() {
+        container["command"] = json!(command);
+    }
+    json!({"restartPolicy": "OnFailure", "containers": [container]})
+}
+
 pub fn create_object(args: &CreateArgs, env: &Env<'_>, files: &Files) -> Reply {
     let name = &args.name;
     let manifest = match &args.object {
@@ -159,6 +168,19 @@ pub fn create_object(args: &CreateArgs, env: &Env<'_>, files: &Files) -> Reply {
                    "metadata": {"name": name, "labels": labels},
                    "spec": {"replicas": replicas, "selector": {"matchLabels": labels},
                             "template": {"metadata": {"labels": labels}, "spec": {"containers": [container]}}}})
+        }
+        CreateObject::Job { image, command } => {
+            json!({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name},
+                   "spec": {"template": {"spec": job_pod_spec(name, image, command)}}})
+        }
+        CreateObject::CronJob {
+            image,
+            schedule,
+            command,
+        } => {
+            json!({"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": name},
+                   "spec": {"schedule": schedule,
+                            "jobTemplate": {"spec": {"template": {"spec": job_pod_spec(name, image, command)}}}}})
         }
         CreateObject::ConfigMap {
             literals,

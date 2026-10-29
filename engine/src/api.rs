@@ -86,16 +86,19 @@ macro_rules! kind {
 }
 
 use k8s_openapi::api::apps::v1 as apps;
+use k8s_openapi::api::batch::v1 as batch;
 use k8s_openapi::api::core::v1 as core;
 use k8s_openapi::api::discovery::v1 as discovery;
 use k8s_openapi::api::networking::v1 as networking;
 
-static KINDS: [KindInfo; 12] = [
+static KINDS: [KindInfo; 14] = [
     kind!(core::ConfigMap, "ConfigMap", "", "v1", "configmaps", "configmap", ["cm"], namespaced: true, generation: false, label: false),
+    kind!(batch::CronJob, "CronJob", "batch", "batch/v1", "cronjobs", "cronjob", ["cj"], namespaced: true, generation: true, label: false),
     kind!(apps::Deployment, "Deployment", "apps", "apps/v1", "deployments", "deployment", ["deploy"], namespaced: true, generation: true, label: false),
     kind!(core::Endpoints, "Endpoints", "", "v1", "endpoints", "endpoints", ["ep"], namespaced: true, generation: false, label: false),
     kind!(discovery::EndpointSlice, "EndpointSlice", "discovery.k8s.io", "discovery.k8s.io/v1", "endpointslices", "endpointslice", [], namespaced: true, generation: false, label: false),
     kind!(core::Event, "Event", "", "v1", "events", "event", ["ev"], namespaced: true, generation: false, label: false),
+    kind!(batch::Job, "Job", "batch", "batch/v1", "jobs", "job", [], namespaced: true, generation: true, label: false),
     kind!(core::Namespace, "Namespace", "", "v1", "namespaces", "namespace", ["ns"], namespaced: false, generation: false, label: true),
     kind!(networking::NetworkPolicy, "NetworkPolicy", "networking.k8s.io", "networking.k8s.io/v1", "networkpolicies", "networkpolicy", ["netpol"], namespaced: true, generation: false, label: false),
     kind!(core::Node, "Node", "", "v1", "nodes", "node", ["no"], namespaced: false, generation: false, label: false),
@@ -133,13 +136,11 @@ const UNSIMULATED_KINDS: &[&str] = &[
     "clusterrole",
     "clusterrolebinding",
     "componentstatus",
-    "cronjob",
     "customresourcedefinition",
     "daemonset",
     "horizontalpodautoscaler",
     "ingress",
     "ingressclass",
-    "job",
     "lease",
     "limitrange",
     "persistentvolume",
@@ -164,8 +165,6 @@ const UNSIMULATED_NAMES: &[&str] = &[
     "clusterrolebindings",
     "componentstatuses",
     "cs",
-    "cronjobs",
-    "cj",
     "crd",
     "crds",
     "customresourcedefinitions",
@@ -176,7 +175,6 @@ const UNSIMULATED_NAMES: &[&str] = &[
     "ing",
     "ingresses",
     "ingressclasses",
-    "jobs",
     "leases",
     "limitranges",
     "limits",
@@ -656,6 +654,8 @@ fn validate(info: &KindInfo, name: &str, object: &Value) -> Result<(), ApiError>
         "Pod" => validate_pod_spec(&object["spec"], "spec", &mut causes),
         "Deployment" | "ReplicaSet" => validate_workload(&object["spec"], &mut causes),
         "Service" => validate_service(&object["spec"], &mut causes),
+        "Job" => validate_job(&object["spec"], "spec", &mut causes),
+        "CronJob" => validate_cronjob(&object["spec"], &mut causes),
         _ => {}
     }
     if causes.is_empty() {
@@ -751,6 +751,43 @@ fn validate_workload(spec: &Value, causes: &mut Vec<String>) {
         }
     }
     validate_pod_spec(&spec["template"]["spec"], "spec.template.spec", causes);
+}
+
+/// A Job's pod template must not restart containers forever.
+fn validate_job(spec: &Value, path: &str, causes: &mut Vec<String>) {
+    for (field, least) in [("completions", 0), ("parallelism", 0), ("backoffLimit", 0)] {
+        if let Some(n) = spec[field].as_i64().filter(|n| *n < least) {
+            causes.push(format!(
+                "{path}.{field}: Invalid value: {n}: must be greater than or equal to {least}"
+            ));
+        }
+    }
+    let policy = spec["template"]["spec"]["restartPolicy"].as_str().unwrap_or("Always");
+    if !matches!(policy, "OnFailure" | "Never") {
+        causes.push(format!(
+            "{path}.template.spec.restartPolicy: Unsupported value: \"{policy}\": supported values: \"OnFailure\", \"Never\""
+        ));
+    }
+    validate_pod_spec(&spec["template"]["spec"], &format!("{path}.template.spec"), causes);
+}
+
+fn validate_cronjob(spec: &Value, causes: &mut Vec<String>) {
+    match spec["schedule"].as_str() {
+        None | Some("") => causes.push("spec.schedule: Required value".into()),
+        Some(schedule) => {
+            if let Err(reason) = crate::cron::parse(schedule) {
+                causes.push(format!("spec.schedule: Invalid value: \"{schedule}\": {reason}"));
+            }
+        }
+    }
+    if let Some(policy) = spec["concurrencyPolicy"].as_str() {
+        if !matches!(policy, "Allow" | "Forbid" | "Replace") {
+            causes.push(format!(
+                "spec.concurrencyPolicy: Unsupported value: \"{policy}\": supported values: \"Allow\", \"Forbid\", \"Replace\""
+            ));
+        }
+    }
+    validate_job(&spec["jobTemplate"]["spec"], "spec.jobTemplate.spec", causes);
 }
 
 fn validate_service(spec: &Value, causes: &mut Vec<String>) {
@@ -888,6 +925,15 @@ fn apply_defaults(info: &KindInfo, name: &str, object: &mut Value) {
             set_default(obj(&mut object["spec"]), "replicas", json!(1));
             default_pod_spec(&mut object["spec"]["template"]["spec"]);
         }
+        "Job" => default_job(&mut object["spec"]),
+        "CronJob" => {
+            let spec = obj(&mut object["spec"]);
+            set_default(spec, "concurrencyPolicy", json!("Allow"));
+            set_default(spec, "suspend", json!(false));
+            set_default(spec, "successfulJobsHistoryLimit", json!(3));
+            set_default(spec, "failedJobsHistoryLimit", json!(1));
+            default_job(&mut spec.entry("jobTemplate").or_insert_with(|| json!({}))["spec"]);
+        }
         "Service" => {
             let spec = obj(&mut object["spec"]);
             set_default(spec, "type", json!("ClusterIP"));
@@ -949,6 +995,18 @@ fn obj(value: &mut Value) -> &mut Map<String, Value> {
         *value = json!({});
     }
     value.as_object_mut().expect("just made an object")
+}
+
+fn default_job(spec: &mut Value) {
+    let spec = obj(spec);
+    set_default(spec, "completions", json!(1));
+    set_default(spec, "parallelism", json!(1));
+    set_default(spec, "backoffLimit", json!(6));
+    set_default(spec, "completionMode", json!("NonIndexed"));
+    set_default(spec, "suspend", json!(false));
+    if let Some(template) = spec.get_mut("template") {
+        default_pod_spec(&mut template["spec"]);
+    }
 }
 
 fn default_pod_spec(spec: &mut Value) {

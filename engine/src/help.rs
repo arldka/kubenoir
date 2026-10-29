@@ -608,6 +608,13 @@ pub struct ShellCommand {
 
 pub const SHELL: &[ShellCommand] = &[
     ShellCommand {
+        name: "sleep",
+        usage: "sleep NUMBER[SUFFIX]...",
+        summary: "Wait: let the cluster run on for NUMBER seconds (SUFFIX: s, m, h, d; at most an hour in one go).",
+        flags: &[],
+        sample: "5",
+    },
+    ShellCommand {
         name: "cat",
         usage: "cat FILE...",
         summary: "Print files to the terminal. Without files, in a pipeline, copy the input.",

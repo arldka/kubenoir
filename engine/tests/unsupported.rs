@@ -23,7 +23,7 @@ fn engine() -> Engine {
         ("dot/.hidden.yaml".to_string(), cm("hidden")),
         (
             "jobs.yaml".to_string(),
-            "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: nightly\n".to_string(),
+            "apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: nightly\n".to_string(),
         ),
     ]);
     Engine::from_scenario(SCENARIO, &files, AppSet::bundled()).expect("scenario loads")
@@ -96,7 +96,7 @@ fn subcommands_that_exist_but_are_not_offered_say_so() {
         ("kubectl set selector deploy/x a=b", "kubectl set selector"),
         ("kubectl set resources deploy/x --limits=cpu=1", "kubectl set resources"),
         ("kubectl create service clusterip x", "kubectl create service"),
-        ("kubectl create job x --image=y", "kubectl create job"),
+        ("kubectl create role x", "kubectl create role"),
         ("kubectl create secret tls x", "kubectl create secret tls"),
     ] {
         assert_eq!(
@@ -151,8 +151,8 @@ fn flags_that_exist_but_are_not_offered_say_so_and_typos_do_not() {
 fn resource_types_that_exist_but_are_not_simulated_say_so() {
     let mut e = engine();
     for arg in [
-        "jobs",
-        "cronjob",
+        "statefulsets",
+        "daemonset",
         "pv",
         "pvc",
         "sa",
@@ -178,8 +178,8 @@ fn resource_types_that_exist_but_are_not_simulated_say_so() {
         "error: the server doesn't have a resource type \"widgets\""
     );
     assert_eq!(
-        e.eval("kubectl explain jobs"),
-        "error: the resource type jobs is not available in this terminal"
+        e.eval("kubectl explain statefulsets"),
+        "error: the resource type statefulsets is not available in this terminal"
     );
 }
 
@@ -187,8 +187,8 @@ fn resource_types_that_exist_but_are_not_simulated_say_so() {
 fn commands_that_only_handle_some_kinds_name_the_kind_they_refuse() {
     let mut e = engine();
     assert_eq!(
-        e.eval("kubectl describe cronjob x"),
-        "error: the resource type cronjob is not available in this terminal"
+        e.eval("kubectl describe daemonset x"),
+        "error: the resource type daemonset is not available in this terminal"
     );
     assert_eq!(
         e.eval("kubectl describe cm x"),
@@ -211,8 +211,8 @@ fn commands_that_only_handle_some_kinds_name_the_kind_they_refuse() {
         "error: kubectl rollout restart for services is not available in this terminal"
     );
     assert_eq!(
-        e.eval("kubectl describe jobs x"),
-        "error: the resource type jobs is not available in this terminal"
+        e.eval("kubectl describe statefulsets x"),
+        "error: the resource type statefulsets is not available in this terminal"
     );
 }
 
@@ -222,13 +222,13 @@ fn manifests_of_kinds_that_are_not_simulated_are_refused_by_name() {
     for command in ["apply", "create", "replace"] {
         assert_eq!(
             e.eval(&format!("kubectl {command} -f jobs.yaml")),
-            "error: the Job kind is not available in this terminal (in \"jobs.yaml\")",
+            "error: the StatefulSet kind is not available in this terminal (in \"jobs.yaml\")",
             "{command}"
         );
     }
     assert_eq!(
         e.eval("kubectl delete -f jobs.yaml"),
-        "error: the Job kind is not available in this terminal (in \"jobs.yaml\")"
+        "error: the StatefulSet kind is not available in this terminal (in \"jobs.yaml\")"
     );
     e.write_file(
         "crd.yaml",
@@ -374,7 +374,7 @@ fn nothing_unsupported_leaves_a_trace_in_the_cluster() {
         "kubectl apply -f jobs.yaml",
         "kubectl delete pod --all",
         "kubectl rollout pause deploy/x",
-        "kubectl create job x --image=y",
+        "kubectl create role x",
         "kubectl apply -f ?.yaml",
     ] {
         let out = e.eval(line);

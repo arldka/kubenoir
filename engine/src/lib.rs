@@ -7,6 +7,7 @@ mod clock;
 mod complete;
 mod container_exec;
 mod controllers;
+mod cron;
 mod describe;
 mod events;
 mod exec;

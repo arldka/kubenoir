@@ -7,7 +7,7 @@ use crate::mutate::delete_object;
 use crate::store::StoreError;
 
 /// Owners go before what they own, so nothing is recreated while the namespace drains.
-const FIRST: [&str; 2] = ["Deployment", "ReplicaSet"];
+const FIRST: [&str; 4] = ["CronJob", "Job", "Deployment", "ReplicaSet"];
 
 pub fn pass(env: &Env<'_>) -> Result<bool, StoreError> {
     let mut changed = false;

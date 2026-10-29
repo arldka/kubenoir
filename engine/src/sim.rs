@@ -185,6 +185,10 @@ impl Engine {
         // Commands may have changed desired state; let the cluster react right away.
         self.reconcile();
         self.judge.observe(&self.store, self.now);
+        // `sleep` lets the cluster run on while the player waits.
+        if ran.sleep_secs > 0 {
+            self.run_until(self.now + ran.sleep_secs);
+        }
         // `kubectl delete` does not return until the objects are really gone.
         if ran.executed.iter().any(|e| waits_for_deletion(&e.command)) {
             self.wait_for_deletions();

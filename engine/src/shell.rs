@@ -27,6 +27,8 @@ pub struct Executed {
 pub struct Line {
     pub output: String,
     pub executed: Vec<Executed>,
+    /// Seconds the line asked the clock to move (`sleep`), for the engine to let pass.
+    pub sleep_secs: i64,
 }
 
 struct Redirect {
@@ -182,7 +184,9 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
     let fail = |message: String| Line {
         output: message,
         executed: Vec::new(),
+        sleep_secs: 0,
     };
+    let mut sleep_secs = 0;
     if line.trim().is_empty() {
         return fail(ParseError::Empty.to_string());
     }
@@ -205,6 +209,19 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
         let name = words.first().map(String::as_str).unwrap_or_default();
         let filtered = try_filter(name, &words[1..], &stdin, files);
         let result = match name {
+            "sleep" => match sleep(&words[1..]) {
+                Ok(secs) => {
+                    sleep_secs += secs;
+                    Output {
+                        stdout: String::new(),
+                        stderr: Vec::new(),
+                    }
+                }
+                Err(message) => Output {
+                    stdout: String::new(),
+                    stderr: vec![message],
+                },
+            },
             "echo" => Output {
                 stdout: echo(&words[1..]),
                 stderr: Vec::new(),
@@ -256,7 +273,41 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
     Line {
         output: Output { stdout: output, stderr }.display(),
         executed,
+        sleep_secs,
     }
+}
+
+/// The longest a single `sleep` may last: an hour of cluster time.
+const MAX_SLEEP_SECS: i64 = 3600;
+
+/// `sleep 90`, `sleep 5m`, `sleep 1h 30m`: how many seconds to let pass.
+fn sleep(args: &[String]) -> Result<i64, String> {
+    if args.is_empty() {
+        return Err("sleep: missing operand\nTry 'sleep --help' for more information.".into());
+    }
+    let mut total = 0i64;
+    for arg in args {
+        let (digits, unit) = match arg.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+            Some((at, _)) => arg.split_at(at),
+            None => (arg.as_str(), "s"),
+        };
+        let factor = match unit {
+            "s" => 1,
+            "m" => 60,
+            "h" => 3600,
+            "d" => 86_400,
+            _ => {
+                return Err(format!(
+                    "sleep: invalid time interval '{arg}'\nTry 'sleep --help' for more information."
+                ))
+            }
+        };
+        let n: i64 = digits
+            .parse()
+            .map_err(|_| format!("sleep: invalid time interval '{arg}'\nTry 'sleep --help' for more information."))?;
+        total = total.saturating_add(n.saturating_mul(factor));
+    }
+    Ok(total.min(MAX_SLEEP_SECS))
 }
 
 /// `-o jsonpath` prints exactly what its template says, with no newline added after it.

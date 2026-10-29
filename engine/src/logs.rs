@@ -2,6 +2,7 @@
 
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::Pod;
+use serde_json::Value;
 
 use crate::clock;
 use crate::controllers::{select_log_instance, LogSelection};
@@ -17,6 +18,15 @@ pub fn logs(args: &LogsArgs, store: &ClusterStore) -> Result<String, StoreError>
     let mut notices: Vec<String> = Vec::new();
     let pod_name = match args.resource {
         ResourceKind::Deployment => match pick_deployment_pod(store, namespace, &args.name)? {
+            Ok((name, found)) => {
+                if found > 1 {
+                    notices.push(format!("Found {found} pods, using pod/{name}"));
+                }
+                name
+            }
+            Err(message) => return Ok(message),
+        },
+        ResourceKind::Job => match pick_job_pod(store, namespace, &args.name)? {
             Ok((name, found)) => {
                 if found > 1 {
                     notices.push(format!("Found {found} pods, using pod/{name}"));
@@ -141,6 +151,48 @@ fn pick_deployment_pod(
     match candidates.first() {
         Some(pod) => Ok(Ok((pod.metadata.name.clone().unwrap_or_default(), candidates.len()))),
         None => Ok(Err(format!("error: no pods found for deployment/{name}"))),
+    }
+}
+
+/// The pod of a Job whose log is the most useful: a running one, else the newest.
+fn pick_job_pod(
+    store: &ClusterStore,
+    namespace: &str,
+    name: &str,
+) -> Result<Result<(String, usize), String>, StoreError> {
+    let Some(job) = store.get("Job", namespace, name)? else {
+        return Ok(Err(format!(
+            "Error from server (NotFound): jobs.batch \"{name}\" not found"
+        )));
+    };
+    let uid = job["metadata"]["uid"].as_str().unwrap_or_default().to_string();
+    let mut pods: Vec<Value> = store
+        .list("Pod", namespace)?
+        .into_iter()
+        .filter(|p| {
+            p["metadata"]["ownerReferences"]
+                .as_array()
+                .is_some_and(|o| o.iter().any(|r| r["uid"] == uid.as_str()))
+        })
+        .collect();
+    pods.sort_by_key(|p| {
+        (
+            matches!(p["status"]["phase"].as_str(), Some("Succeeded" | "Failed")),
+            std::cmp::Reverse(
+                p["metadata"]["creationTimestamp"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+            p["metadata"]["name"].as_str().unwrap_or_default().to_string(),
+        )
+    });
+    match pods.first() {
+        Some(pod) => Ok(Ok((
+            pod["metadata"]["name"].as_str().unwrap_or_default().to_string(),
+            pods.len(),
+        ))),
+        None => Ok(Err(format!("error: no pods found for job/{name}"))),
     }
 }
 

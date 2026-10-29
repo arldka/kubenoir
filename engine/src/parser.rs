@@ -10,6 +10,7 @@ pub enum ResourceKind {
     Event,
     Deployment,
     ReplicaSet,
+    Job,
 }
 
 impl ResourceKind {
@@ -19,6 +20,7 @@ impl ResourceKind {
             "events" | "event" | "ev" => Ok(ResourceKind::Event),
             "deployments" | "deployment" | "deploy" => Ok(ResourceKind::Deployment),
             "replicasets" | "replicaset" | "rs" => Ok(ResourceKind::ReplicaSet),
+            "jobs" | "job" => Ok(ResourceKind::Job),
             other => Err(unsupported_resource(other)),
         }
     }
@@ -41,6 +43,7 @@ impl ResourceKind {
             ResourceKind::Event => "Event",
             ResourceKind::Deployment => "Deployment",
             ResourceKind::ReplicaSet => "ReplicaSet",
+            ResourceKind::Job => "Job",
         }
     }
 
@@ -51,6 +54,7 @@ impl ResourceKind {
             ResourceKind::Event => "events",
             ResourceKind::Deployment => "deployments.apps",
             ResourceKind::ReplicaSet => "replicasets.apps",
+            ResourceKind::Job => "jobs.batch",
         }
     }
 }
@@ -269,6 +273,15 @@ pub enum CreateObject {
         username: String,
         password: String,
         email: Option<String>,
+    },
+    Job {
+        image: String,
+        command: Vec<String>,
+    },
+    CronJob {
+        image: String,
+        schedule: String,
+        command: Vec<String>,
     },
 }
 
@@ -647,9 +660,7 @@ const ROLLOUT_UNSUPPORTED: &[&str] = &["pause", "resume"];
 const CREATE_UNSUPPORTED: &[&str] = &[
     "clusterrole",
     "clusterrolebinding",
-    "cronjob",
     "ingress",
-    "job",
     "poddisruptionbudget",
     "priorityclass",
     "quota",
@@ -842,9 +853,12 @@ fn parse_create_object(sub: &str, args: &[&str]) -> Result<Command, ParseError> 
     let (mut image, mut replicas, mut port, mut secret_type) = (None, 1, None, None);
     let (mut literals, mut files) = (Vec::new(), Vec::new());
     let (mut server, mut username, mut password, mut email) = (None, None, None, None);
+    let mut schedule = None;
     let (kind, rest) = match sub {
         "namespace" | "ns" => ("namespace", args),
         "deployment" | "deploy" => ("deployment", args),
+        "job" => ("job", args),
+        "cronjob" | "cj" => ("cronjob", args),
         "configmap" | "cm" => ("configmap", args),
         "secret" => match args.split_first() {
             Some((&"generic", rest)) => ("secret generic", rest),
@@ -868,9 +882,11 @@ fn parse_create_object(sub: &str, args: &[&str]) -> Result<Command, ParseError> 
             })
         }
     };
-    let (positional, _, namespace) = scan_args(rest, |arg, iter| {
+    let (positional, trailing, namespace) = scan_args(rest, |arg, iter| {
         if let Some(v) = long_value(arg, "--image", iter)? {
             image = Some(v);
+        } else if let Some(v) = long_value(arg, "--schedule", iter)? {
+            schedule = Some(v);
         } else if let Some(v) = long_value(arg, "--replicas", iter)? {
             replicas = parse_i32("--replicas", &v)?;
         } else if let Some(v) = long_value(arg, "--port", iter)? {
@@ -897,6 +913,8 @@ fn parse_create_object(sub: &str, args: &[&str]) -> Result<Command, ParseError> 
     // Flags that belong to another kind of object are refused rather than ignored.
     let allowed: &[&str] = match kind {
         "deployment" => &["image", "replicas", "port"],
+        "job" => &["image"],
+        "cronjob" => &["image", "schedule"],
         "configmap" => &["from-literal", "from-file"],
         "secret generic" => &["from-literal", "from-file", "type"],
         "secret docker-registry" => &["docker-server", "docker-username", "docker-password", "docker-email"],
@@ -904,6 +922,7 @@ fn parse_create_object(sub: &str, args: &[&str]) -> Result<Command, ParseError> 
     };
     let given = [
         ("image", image.is_some()),
+        ("schedule", schedule.is_some()),
         ("replicas", replicas != 1),
         ("port", port.is_some()),
         ("from-literal", !literals.is_empty()),
@@ -937,6 +956,15 @@ fn parse_create_object(sub: &str, args: &[&str]) -> Result<Command, ParseError> 
             image: image.ok_or(ParseError::MissingFlag("image"))?,
             replicas,
             port,
+        },
+        "job" => CreateObject::Job {
+            image: image.ok_or(ParseError::MissingFlag("image"))?,
+            command: trailing.iter().map(|w| w.to_string()).collect(),
+        },
+        "cronjob" => CreateObject::CronJob {
+            image: image.ok_or(ParseError::MissingFlag("image"))?,
+            schedule: schedule.ok_or(ParseError::MissingFlag("schedule"))?,
+            command: trailing.iter().map(|w| w.to_string()).collect(),
         },
         "configmap" => CreateObject::ConfigMap { literals, files },
         "secret generic" => CreateObject::Secret {
@@ -1499,7 +1527,16 @@ fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
 }
 
 /// The kinds `kubectl describe` can describe.
-const DESCRIBABLE: &[&str] = &["Pod", "Deployment", "ReplicaSet", "Event", "Namespace", "Service"];
+const DESCRIBABLE: &[&str] = &[
+    "Pod",
+    "Deployment",
+    "ReplicaSet",
+    "Event",
+    "Namespace",
+    "Service",
+    "Job",
+    "CronJob",
+];
 
 fn parse_describe(args: &[&str]) -> Result<DescribeArgs, ParseError> {
     let mut positional = KindArgs::default();
@@ -1576,7 +1613,7 @@ fn parse_logs(args: &[&str]) -> Result<LogsArgs, ParseError> {
     let target = pod.ok_or(ParseError::LogsMissingPod)?;
     let (resource, name) = match target.split_once('/') {
         Some((kind, name)) => match ResourceKind::for_verb("logs", kind)? {
-            kind @ (ResourceKind::Pod | ResourceKind::Deployment) => (kind, name.to_string()),
+            kind @ (ResourceKind::Pod | ResourceKind::Deployment | ResourceKind::Job) => (kind, name.to_string()),
             other => return Err(ParseError::LogsUnsupportedTarget(other.plural().to_string())),
         },
         None => (ResourceKind::Pod, target),
