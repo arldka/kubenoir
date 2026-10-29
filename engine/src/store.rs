@@ -221,11 +221,11 @@ impl ClusterStore {
         )
     }
 
-    /// Every namespace that holds at least one namespaced resource, sorted.
+    /// The names of the Namespace objects, sorted.
     pub fn namespaces(&self) -> Result<Vec<String>, StoreError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT namespace FROM resources WHERE namespace <> '' ORDER BY namespace")?;
+            .prepare("SELECT name FROM resources WHERE kind = 'Namespace' ORDER BY name")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -404,8 +404,14 @@ mod tests {
     }
 
     #[test]
-    fn namespaces_lists_distinct_sorted() {
+    fn namespaces_lists_namespace_objects_sorted() {
         let store = store_with_pods();
+        assert!(store.namespaces().unwrap().is_empty(), "pods do not make a namespace");
+        for name in ["kube-system", "default"] {
+            store
+                .insert("Namespace", "v1", "", name, &json!({ "name": name }))
+                .unwrap();
+        }
         assert_eq!(store.namespaces().unwrap(), ["default", "kube-system"]);
         assert!(ClusterStore::new().unwrap().namespaces().unwrap().is_empty());
     }

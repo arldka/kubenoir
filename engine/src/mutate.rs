@@ -7,6 +7,7 @@
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
 use k8s_openapi::api::core::v1::{EnvVar, Pod};
 
+use crate::api::{self, KindInfo};
 use crate::clock;
 use crate::controllers::{delete_pod, is_owned_by, Env};
 use crate::parser::{DeleteArgs, EnvChange, ResourceKind, RolloutRestartArgs, SetEnvArgs};
@@ -151,27 +152,62 @@ pub fn rollout_restart(args: &RolloutRestartArgs, env: &Env<'_>) -> Result<Strin
     Ok(lines.join("\n"))
 }
 
+/// The namespaces the API server will not delete.
+const IMMORTAL_NAMESPACES: [&str; 3] = ["default", "kube-public", "kube-system"];
+
+/// How a delete by name ended.
+pub enum Deleted {
+    Gone,
+    Missing,
+    /// The API server refused; the text is its error line.
+    Forbidden(String),
+}
+
+/// Delete one object by name, the way `kubectl delete` asks the API server to.
+pub fn delete_named(
+    env: &Env<'_>,
+    info: &KindInfo,
+    namespace: &str,
+    name: &str,
+    immediate: bool,
+) -> Result<Deleted, StoreError> {
+    if info.kind == "Namespace" && IMMORTAL_NAMESPACES.contains(&name) {
+        return Ok(Deleted::Forbidden(format!(
+            "Error from server (Forbidden): namespaces \"{name}\" is forbidden: this namespace may not be deleted"
+        )));
+    }
+    let scope = if info.namespaced { namespace } else { "" };
+    Ok(if delete_object(env, info.kind, scope, name, immediate)? {
+        Deleted::Gone
+    } else {
+        Deleted::Missing
+    })
+}
+
 pub fn delete(args: &DeleteArgs, env: &Env<'_>) -> Result<String, StoreError> {
+    let Some(info) = api::info(args.kind) else {
+        return Ok(format!("error: unknown kind {}", args.kind));
+    };
     let namespace = args.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
-    let kind = args.resource.kind();
     let mut lines = Vec::new();
-    if args.immediate && args.resource == ResourceKind::Pod {
+    if args.immediate && info.kind == "Pod" {
         lines.push("Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.".to_string());
     }
 
     for name in &args.names {
-        if delete_object(env, kind, namespace, name, args.immediate)? {
-            lines.push(format!("{} \"{name}\" deleted", args.resource.name_prefix()));
-        } else {
-            lines.push(not_found(args.resource, name));
-        }
+        lines.push(match delete_named(env, info, namespace, name, args.immediate)? {
+            Deleted::Gone => format!("{} \"{name}\" deleted", info.name_prefix()),
+            Deleted::Missing => format!("Error from server (NotFound): {} \"{name}\" not found", info.resource()),
+            Deleted::Forbidden(message) => message,
+        });
     }
     Ok(lines.join("\n"))
 }
 
 /// Delete one object the way the API server and garbage collector would: pods get their grace
 /// period, and Deployments and ReplicaSets take what they own with them. Returns whether the
-/// object existed. Callers handle kinds that cannot be deleted here (namespaces).
+/// object existed. A namespace is only marked: the namespace controller empties it and then
+/// removes it, so it shows as `Terminating` meanwhile.
 pub fn delete_object(
     env: &Env<'_>,
     kind: &str,
@@ -184,6 +220,14 @@ pub fn delete_object(
     };
     match kind {
         "Pod" => delete_pod(env, &serde_json::from_value::<Pod>(manifest)?, immediate)?,
+        "Namespace" => {
+            if manifest["metadata"].get("deletionTimestamp").is_none() {
+                let mut terminating = manifest;
+                terminating["metadata"]["deletionTimestamp"] = serde_json::json!(clock::format(env.now));
+                terminating["status"]["phase"] = serde_json::json!("Terminating");
+                env.store.update(kind, namespace, name, &terminating)?;
+            }
+        }
         "ReplicaSet" => {
             let rs: ReplicaSet = serde_json::from_value(manifest)?;
             delete_owned_pods(

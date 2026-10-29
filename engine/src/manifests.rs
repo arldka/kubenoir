@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use crate::api::{self, ApiError, Origin};
 use crate::controllers::Env;
 use crate::judge::Touched;
-use crate::mutate::delete_object;
+use crate::mutate::{delete_named, delete_object, Deleted};
 use crate::parser::ManifestArgs;
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::StoreError;
@@ -319,20 +319,19 @@ pub fn delete(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Writt
             errors.push(write_error(doc, "deleting", &error));
             continue;
         };
-        if info.kind == "Namespace" {
-            errors.push("error: deleting namespaces is not available in this terminal".into());
-            continue;
-        }
-        let namespace = if info.namespaced { doc.namespace.as_str() } else { "" };
-        if delete_object(env, info.kind, namespace, doc.name(), false)? {
-            lines.push(format!("{} \"{}\" deleted", info.name_prefix(), doc.name()));
-            touched.push((info.kind, doc.name().to_string()));
-        } else {
-            let error = ApiError::NotFound {
-                resource: info.resource(),
-                name: doc.name().to_string(),
-            };
-            errors.push(write_error(doc, "deleting", &error));
+        match delete_named(env, info, &doc.namespace, doc.name(), false)? {
+            Deleted::Gone => {
+                lines.push(format!("{} \"{}\" deleted", info.name_prefix(), doc.name()));
+                touched.push((info.kind, doc.name().to_string()));
+            }
+            Deleted::Missing => {
+                let error = ApiError::NotFound {
+                    resource: info.resource(),
+                    name: doc.name().to_string(),
+                };
+                errors.push(write_error(doc, "deleting", &error));
+            }
+            Deleted::Forbidden(message) => errors.push(message),
         }
     }
     Ok(Written::report(lines, errors, touched))

@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 
+use crate::api;
 use crate::parser::{shell_split, ResourceKind};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
@@ -131,7 +132,7 @@ fn candidates(previous: &[String], word: &str, store: &ClusterStore) -> Result<V
 
     // Positional arguments (flags and their values removed).
     let positional = positionals(args);
-    let names_in = |kind: ResourceKind| -> Result<Vec<String>, StoreError> { names(store, kind, &namespace) };
+    let names_in = |kind: &str| -> Result<Vec<String>, StoreError> { names(store, kind, &namespace) };
 
     if verb == "logs" {
         return match positional.len() {
@@ -139,12 +140,8 @@ fn candidates(previous: &[String], word: &str, store: &ClusterStore) -> Result<V
                 if let Some((kind, _)) = word.split_once('/') {
                     return slash_names(kind, &namespace, store);
                 }
-                let mut all = names_in(ResourceKind::Pod)?;
-                all.extend(
-                    names_in(ResourceKind::Deployment)?
-                        .into_iter()
-                        .map(|n| format!("deploy/{n}")),
-                );
+                let mut all = names_in("Pod")?;
+                all.extend(names_in("Deployment")?.into_iter().map(|n| format!("deploy/{n}")));
                 Ok(all)
             }
             1 => containers_of(store, &namespace, positional[0]),
@@ -162,7 +159,7 @@ fn candidates(previous: &[String], word: &str, store: &ClusterStore) -> Result<V
     if first.contains('/') {
         return Ok(resource_types(word));
     }
-    let Ok(kind) = ResourceKind::from_arg(first) else {
+    let Some(kind) = api::kind_for_arg(first).map(|k| k.kind) else {
         return Ok(Vec::new());
     };
     if verb == "set" && positional.len() >= 2 {
@@ -186,7 +183,7 @@ fn resource_types(word: &str) -> Vec<String> {
 
 /// `TYPE/` + names of that type.
 fn slash_names(kind: &str, namespace: &str, store: &ClusterStore) -> Result<Vec<String>, StoreError> {
-    let Ok(resource) = ResourceKind::from_arg(kind) else {
+    let Some(resource) = api::kind_for_arg(kind).map(|k| k.kind) else {
         return Ok(Vec::new());
     };
     Ok(names(store, resource, namespace)?
@@ -195,9 +192,15 @@ fn slash_names(kind: &str, namespace: &str, store: &ClusterStore) -> Result<Vec<
         .collect())
 }
 
-fn names(store: &ClusterStore, kind: ResourceKind, namespace: &str) -> Result<Vec<String>, StoreError> {
+/// The names of the objects of a kind: in the namespace, or all of them for cluster-scoped kinds.
+fn names(store: &ClusterStore, kind: &str, namespace: &str) -> Result<Vec<String>, StoreError> {
+    let scope = if api::info(kind).is_some_and(|k| k.namespaced) {
+        namespace
+    } else {
+        ""
+    };
     Ok(store
-        .list(kind.kind(), namespace)?
+        .list(kind, scope)?
         .iter()
         .filter_map(|m| m["metadata"]["name"].as_str().map(String::from))
         .collect())
@@ -361,7 +364,8 @@ mod tests {
         assert_eq!(complete("kubectl get deploy ").1, ["payments-api", "web"]);
         assert_eq!(complete("kubectl describe deployment pay").1, ["payments-api"]);
         assert_eq!(complete("kubectl get pods nomatch").1, Vec::<String>::new());
-        assert_eq!(complete("kubectl get nodes ").1, Vec::<String>::new());
+        assert_eq!(complete("kubectl get nodes ").1, ["worker-1", "worker-2"]);
+        assert_eq!(complete("kubectl get widgets ").1, Vec::<String>::new());
     }
 
     #[test]
@@ -384,10 +388,17 @@ mod tests {
             complete("kubectl get pods --namespace=kube-system e").1,
             ["etcd-control-plane"]
         );
-        assert_eq!(complete("kubectl get pods -n ").1, ["default", "kube-system"]);
-        assert_eq!(complete("kubectl get pods -n kube").1, ["kube-system"]);
         assert_eq!(
-            complete("kubectl get pods --namespace=kube").1,
+            complete("kubectl get pods -n ").1,
+            ["default", "kube-node-lease", "kube-public", "kube-system"]
+        );
+        assert_eq!(
+            complete("kubectl get pods -n kube").1,
+            ["kube-node-lease", "kube-public", "kube-system"]
+        );
+        assert_eq!(complete("kubectl get pods -n kube-s").1, ["kube-system"]);
+        assert_eq!(
+            complete("kubectl get pods --namespace=kube-s").1,
             ["--namespace=kube-system"]
         );
     }

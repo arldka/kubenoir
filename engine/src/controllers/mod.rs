@@ -7,6 +7,7 @@
 pub mod config;
 mod deployment;
 mod kubelet;
+mod namespace;
 mod pods;
 mod replicaset;
 mod scheduler;
@@ -43,11 +44,13 @@ pub fn reconcile(env: &Env<'_>) -> Result<(), StoreError> {
 
 /// One sweep of every loop, in dependency order. Returns whether anything changed.
 fn pass(env: &Env<'_>) -> Result<bool, StoreError> {
+    // Namespaces being deleted go first, so their workloads are gone before they can react.
+    let namespaces = namespace::pass(env)?;
     let deployments = deployment::pass(env)?;
     let replica_sets = replicaset::pass(env)?;
     let scheduled = scheduler::pass(env)?;
     let ran = kubelet::pass(env)?;
-    Ok(deployments || replica_sets || scheduled || ran)
+    Ok(namespaces || deployments || replica_sets || scheduled || ran)
 }
 
 /// `(namespace, name, uid)` of a pod, with the defaults the API server would apply.

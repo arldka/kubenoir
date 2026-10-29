@@ -53,16 +53,6 @@ impl ResourceKind {
             ResourceKind::ReplicaSet => "replicasets.apps",
         }
     }
-
-    /// Prefix kubectl uses in `-o name` output (`pod/web`, `deployment.apps/web`).
-    pub fn name_prefix(self) -> &'static str {
-        match self {
-            ResourceKind::Pod => "pod",
-            ResourceKind::Event => "event",
-            ResourceKind::Deployment => "deployment.apps",
-            ResourceKind::ReplicaSet => "replicaset.apps",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +102,8 @@ pub struct GetArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescribeArgs {
-    pub resource: ResourceKind,
+    /// The kind to describe, as the API registry names it (`Pod`, `Namespace`).
+    pub kind: &'static str,
     pub names: Vec<String>,
     pub namespace: Option<String>,
 }
@@ -157,7 +148,8 @@ pub struct RolloutRestartArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteArgs {
-    pub resource: ResourceKind,
+    /// The kind to delete, as the API registry names it (`Pod`, `ConfigMap`).
+    pub kind: &'static str,
     pub names: Vec<String>,
     pub namespace: Option<String>,
     /// `--force` / `--grace-period=0` / `--now`: skip the termination grace period.
@@ -1453,8 +1445,11 @@ fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
     })
 }
 
+/// The kinds `kubectl describe` can describe.
+const DESCRIBABLE: &[&str] = &["Pod", "Deployment", "ReplicaSet", "Event", "Namespace"];
+
 fn parse_describe(args: &[&str]) -> Result<DescribeArgs, ParseError> {
-    let mut positional = ResourceArgs::for_verb("describe");
+    let mut positional = KindArgs::default();
     let mut namespace: Option<String> = None;
 
     let mut iter = args.iter().copied();
@@ -1468,12 +1463,12 @@ fn parse_describe(args: &[&str]) -> Result<DescribeArgs, ParseError> {
         }
     }
 
-    let (resource, names) = positional.finish("describe")?;
-    Ok(DescribeArgs {
-        resource,
-        names,
-        namespace,
-    })
+    let (kind, names) = positional.finish("describe")?;
+    if !DESCRIBABLE.contains(&kind) {
+        let plural = crate::api::info(kind).map_or_else(|| kind.to_string(), |i| i.resource());
+        return Err(ParseError::Unsupported(format!("kubectl describe for {plural}")));
+    }
+    Ok(DescribeArgs { kind, names, namespace })
 }
 
 fn parse_logs(args: &[&str]) -> Result<LogsArgs, ParseError> {
@@ -1532,7 +1527,7 @@ fn parse_logs(args: &[&str]) -> Result<LogsArgs, ParseError> {
 }
 
 fn parse_delete(args: &[&str]) -> Result<Command, ParseError> {
-    let mut positional = ResourceArgs::for_verb("delete");
+    let mut positional = KindArgs::default();
     let mut has_positional = false;
     let mut namespace: Option<String> = None;
     let mut immediate = false;
@@ -1569,12 +1564,12 @@ fn parse_delete(args: &[&str]) -> Result<Command, ParseError> {
             force: false,
         }));
     }
-    let (resource, names) = positional.finish("delete")?;
+    let (kind, names) = positional.finish("delete")?;
     if names.is_empty() {
         return Err(ParseError::MissingName);
     }
     Ok(Command::Delete(DeleteArgs {
-        resource,
+        kind,
         names,
         namespace,
         immediate,
@@ -1983,7 +1978,7 @@ mod tests {
     fn parses_describe() {
         let describe = |names: &[&str], ns: Option<&str>| {
             Ok(Command::Describe(DescribeArgs {
-                resource: ResourceKind::Pod,
+                kind: "Pod",
                 names: names.iter().map(|s| s.to_string()).collect(),
                 namespace: ns.map(String::from),
             }))
@@ -2256,7 +2251,7 @@ mod tests {
 
         let delete = |names: &[&str], immediate: bool| {
             Ok(Command::Delete(DeleteArgs {
-                resource: ResourceKind::Pod,
+                kind: "Pod",
                 names: names.iter().map(|s| s.to_string()).collect(),
                 namespace: None,
                 immediate,

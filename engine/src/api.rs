@@ -253,6 +253,10 @@ pub enum ApiError {
     NotSimulated {
         kind: String,
     },
+    /// New content in a namespace that is being deleted.
+    Terminating {
+        namespace: String,
+    },
     /// The manifest does not decode into its kind (wrong type, unknown field).
     BadRequest {
         kind: &'static str,
@@ -284,6 +288,7 @@ impl ApiError {
             | ApiError::NoKindMatch { .. }
             | ApiError::NotSimulated { .. }
             | ApiError::Store(_) => None,
+            ApiError::Terminating { .. } => Some("Forbidden"),
             ApiError::BadRequest { .. } => Some("BadRequest"),
             ApiError::Invalid { .. } => Some("Invalid"),
             ApiError::NotFound { .. } => Some("NotFound"),
@@ -311,6 +316,9 @@ impl ApiError {
                 format!("no matches for kind \"{kind}\" in version \"{api_version}\"")
             }
             ApiError::NotSimulated { kind } => format!("the {kind} kind is not available in this terminal"),
+            ApiError::Terminating { namespace } => {
+                format!("unable to create new content in namespace {namespace} because it is being terminated")
+            }
             ApiError::BadRequest {
                 kind,
                 api_version,
@@ -538,13 +546,19 @@ fn object_namespace(info: &KindInfo, object: &Value) -> String {
 }
 
 fn ensure_namespace(store: &ClusterStore, info: &KindInfo, namespace: &str) -> Result<(), ApiError> {
-    if info.namespaced && store.get("Namespace", "", namespace)?.is_none() {
-        return Err(ApiError::NotFound {
+    if !info.namespaced {
+        return Ok(());
+    }
+    match store.get("Namespace", "", namespace)? {
+        None => Err(ApiError::NotFound {
             resource: "namespaces".into(),
             name: namespace.to_string(),
-        });
+        }),
+        Some(ns) if ns["metadata"].get("deletionTimestamp").is_some() => Err(ApiError::Terminating {
+            namespace: namespace.to_string(),
+        }),
+        Some(_) => Ok(()),
     }
-    Ok(())
 }
 
 /// Resolve the kind and decode strictly: the object as the server keeps it, with

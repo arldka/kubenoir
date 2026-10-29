@@ -199,8 +199,8 @@ fn commands_that_only_handle_some_kinds_name_the_kind_they_refuse() {
         "error: kubectl describe for configmaps is not available in this terminal"
     );
     assert_eq!(
-        e.eval("kubectl delete cm x"),
-        "error: kubectl delete for configmaps is not available in this terminal"
+        e.eval("kubectl describe node x"),
+        "error: kubectl describe for nodes is not available in this terminal"
     );
     assert_eq!(
         e.eval("kubectl logs nodes/x"),

@@ -456,7 +456,7 @@ fn matches_command(matcher: &CommandMatcher, command: &Command, touched: &[Touch
             kind.is_none_or(|k| k == a.kind) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
         }
         ("describe", Command::Describe(a)) => {
-            wanted(a.resource) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
+            kind.is_none_or(|k| k == a.kind) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
         }
         ("logs", Command::Logs(a)) => wanted(a.resource) && named(&[a.name.as_str()]),
         ("set-env", Command::SetEnv(a)) => {
@@ -466,7 +466,7 @@ fn matches_command(matcher: &CommandMatcher, command: &Command, touched: &[Touch
             wanted(a.resource) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
         }
         ("delete", Command::Delete(a)) => {
-            wanted(a.resource) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
+            kind.is_none_or(|k| k == a.kind) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
         }
         ("delete", Command::DeleteFiles(_))
         | ("apply", Command::Apply(_))

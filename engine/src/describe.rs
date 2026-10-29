@@ -7,9 +7,10 @@ use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use k8s_openapi::jiff::tz::TimeZone;
 use serde_json::Value;
 
+use crate::api;
 use crate::clock;
 use crate::names;
-use crate::parser::{DescribeArgs, ResourceKind};
+use crate::parser::DescribeArgs;
 use crate::render::{event_age, format_table_with_gap};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
@@ -19,19 +20,47 @@ const NONE: &str = "<none>";
 /// User-facing failures come back as `Ok(kubectl error text)`; `Err` is a broken store.
 pub fn describe(args: &DescribeArgs, store: &ClusterStore, now: i64) -> Result<String, StoreError> {
     let namespace = args.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
-    match args.resource {
-        ResourceKind::Pod => describe_each(args, store, namespace, |manifest, events| {
+    match args.kind {
+        "Pod" => describe_each(args, store, namespace, |manifest, events| {
             Ok(describe_pod(&serde_json::from_value(manifest)?, events, now))
         }),
-        ResourceKind::Deployment => describe_each(args, store, namespace, |manifest, events| {
+        "Namespace" => describe_each(args, store, namespace, |manifest, _| {
+            Ok(describe_namespace(&serde_json::from_value(manifest)?))
+        }),
+        "Deployment" => describe_each(args, store, namespace, |manifest, events| {
             let deployment: Deployment = serde_json::from_value(manifest)?;
             let owned = owned_replica_sets(store, namespace, deployment.metadata.uid.as_deref().unwrap_or_default())?;
             Ok(describe_deployment(&deployment, &owned, events, now))
         }),
-        ResourceKind::Event | ResourceKind::ReplicaSet => {
-            Ok(format!("error: describing {} is not supported", args.resource.plural()))
-        }
+        other => Ok(format!(
+            "error: describing {} is not supported",
+            api::info(other).map_or_else(|| other.to_string(), |i| i.resource())
+        )),
     }
+}
+
+/// `kubectl describe namespace`: the labels and phase, then the quota and limit sections kubectl
+/// always prints (this cluster has neither).
+fn describe_namespace(namespace: &k8s_openapi::api::core::v1::Namespace) -> String {
+    let meta = &namespace.metadata;
+    let phase = namespace
+        .status
+        .as_ref()
+        .and_then(|s| s.phase.clone())
+        .unwrap_or_default();
+    let rows = vec![
+        ("Name:".to_string(), vec![meta.name.clone().unwrap_or_default()]),
+        ("Labels:".to_string(), map_lines(meta.labels.as_ref(), "=")),
+        ("Annotations:".to_string(), map_lines(meta.annotations.as_ref(), ": ")),
+        ("Status:".to_string(), vec![phase]),
+    ];
+    let mut out = Vec::new();
+    push_block(&mut out, 0, &rows);
+    out.push(String::new());
+    out.push("No resource quota.".into());
+    out.push(String::new());
+    out.push("No LimitRange resource.".into());
+    out.join("\n")
 }
 
 fn owned_replica_sets(store: &ClusterStore, namespace: &str, owner_uid: &str) -> Result<Vec<ReplicaSet>, StoreError> {
@@ -59,13 +88,24 @@ fn describe_each(
     namespace: &str,
     render: impl Fn(Value, &[Event]) -> Result<String, StoreError>,
 ) -> Result<String, StoreError> {
-    let kind = args.resource.kind();
+    let kind = args.kind;
+    let info = api::info(kind);
+    // Cluster-scoped kinds live outside every namespace.
+    let namespace = if info.is_some_and(|i| i.namespaced) {
+        namespace
+    } else {
+        ""
+    };
     let mut manifests = Vec::new();
     let mut errors = Vec::new();
     if args.names.is_empty() {
         manifests = store.list(kind, namespace)?;
         if manifests.is_empty() {
-            return Ok(format!("No resources found in {namespace} namespace."));
+            return Ok(if namespace.is_empty() {
+                "No resources found".to_string()
+            } else {
+                format!("No resources found in {namespace} namespace.")
+            });
         }
     } else {
         for name in &args.names {
@@ -73,7 +113,7 @@ fn describe_each(
                 Some(m) => manifests.push(m),
                 None => errors.push(format!(
                     "Error from server (NotFound): {} \"{name}\" not found",
-                    args.resource.plural()
+                    info.map_or_else(|| kind.to_string(), |i| i.resource())
                 )),
             }
         }
