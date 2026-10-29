@@ -221,11 +221,11 @@ impl ClusterStore {
         )
     }
 
-    /// Every namespace that holds at least one resource, sorted.
+    /// Every namespace that holds at least one namespaced resource, sorted.
     pub fn namespaces(&self) -> Result<Vec<String>, StoreError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT namespace FROM resources ORDER BY namespace")?;
+            .prepare("SELECT DISTINCT namespace FROM resources WHERE namespace <> '' ORDER BY namespace")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }

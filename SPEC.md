@@ -69,7 +69,7 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 ## §T tasks
 
 id|status|task|cites
-T1|.|generic write path: kind registry (kind ↔ `k8s-openapi` type, scope ns\|cluster, aliases) over `ClusterStore`|C7,C8,V1,V2
+T1|x|generic write path: kind registry (kind ↔ `k8s-openapi` type, scope ns\|cluster, aliases) over `ClusterStore`|C7,C8,V1,V2
 T2|.|`create -f`, `apply -f` (multi-doc, file\|stdin), `delete -f`; last-applied annotation; unchanged detection|V1,V2,V4,I.cmd
 T3|.|schemaVersion `2`: `cluster.manifests` refs → YAML loaded via T1 path; drop `nodes`/`deployments`/`pods`; static `status` docs|C11,I.scenario,I.engine,V22,V23
 T3a|.|migrate `scenarios/crashloop-env-typo` & `sample-crashloop` to JSON + `manifests/*.yaml`; `scenario-check` reads refs from disk|C11,V20

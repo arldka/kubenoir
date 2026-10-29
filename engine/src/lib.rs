@@ -1,6 +1,9 @@
 //! Engine entry point. This file is the only WASM boundary; simulation, parsing and state
 //! live in plain-Rust modules.
 
+// Not called outside tests until `apply` and the scenario loader use it (SPEC T2, T3).
+#[cfg_attr(not(test), allow(dead_code))]
+mod api;
 mod apps;
 mod clock;
 mod complete;
