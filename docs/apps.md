@@ -43,9 +43,11 @@ Apps are artifacts, like container images:
   volume types keep the pod in `ContainerCreating` with a `FailedMount` event. Because a run is
   simulated ahead of time, the kubelet simulates a running app again whenever what it can read
   changes (a refresh, or a sibling's write); what it had already logged stays. Files are text.
-- **Networking is mocked, not simulated.** An app that "connects" somewhere decides the outcome
-  itself, by comparing what it was given with the servers its config describes (as `db-client`
-  does with `database`). Nothing checks the cluster's Services or Pods.
+- **Networking is answered by the cluster, not simulated.** No sockets exist. An app that
+  connects asks the engine through one host call (`kit::ask`); the engine resolves the name from
+  the pod's namespace, follows the Service and its ready endpoints, applies NetworkPolicies, checks
+  that a program listens on the port, and has that program answer (see Servers below). The cluster
+  is read when the container starts, so a fix shows up after the container restarts.
 
 ## Templates
 

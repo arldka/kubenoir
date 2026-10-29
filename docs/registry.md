@@ -8,14 +8,17 @@ and by any **remote** backend. One client (`frontend/src/lib/registry.ts`) talks
 
 ```
 {scenarioSource}/scenarios/index.json        [{ "id", "title", "objective" }]
-{scenarioSource}/scenarios/{id}.json         the scenario file
-{appRegistry}/apps/index.json                { "db-client": ["0.1.0"], ... }
+{scenarioSource}/scenarios/{id}/scenario.json   the scenario file
+{scenarioSource}/scenarios/{id}/{file}          every file its cluster.manifests and files list,
+                                                at the same relative path
+{appRegistry}/apps/index.json                { "db-client": ["0.2.0"], ... }
 {appRegistry}/apps/{name}/{version}.wasm     the app (wasm32-wasip1)
 ```
 
 - **References.** Scenarios reference apps as `name@version` (`"app": "db-client@0.2.0"`).
-- **Immutable versions.** A published version must never change, because recorded sessions are
-  replayed to verify scores and need the exact same apps. Publish a new version instead.
+- **Immutable versions.** A published version must never change, because a replayed session
+  (a scenario's `solution.json`, a recorded run) must reach the same verdict and needs the exact same
+  apps. Publish a new version instead.
 - **Safe path segments.** Ids, names and versions use only `A-Z a-z 0-9 . _ -`.
 - **CORS.** A remote registry on another origin must send CORS headers (for example
   `Access-Control-Allow-Origin: *`), or the browser cannot read it.
@@ -29,8 +32,8 @@ sources. `make dev`, `make build`, `make check` and `make e2e` run it first.
    `Cargo.toml`.
 2. **Check.** It runs `scenario-check` on every scenario: each must load, and its `solution.json`, if
    any, must solve it.
-3. **Scenarios.** It publishes each `scenarios/{id}/scenario.json` as `scenarios/{id}.json` and lists
-   it in the index. A file without a `briefing` is an engine test fixture and is skipped. The folder
+3. **Scenarios.** It publishes each `scenarios/{id}/scenario.json` together with the manifest and
+   case files it references, and lists it in the index. A file without a `briefing` is an engine test fixture and is skipped. The folder
    must be named after the scenario's `id`, and every app the scenario references must be in the
    registry.
 
@@ -74,7 +77,9 @@ Most scenarios are JSON only: pick published apps and configure them (see
 
 You only need Rust for a new kind of app (see [apps.md](apps.md#adding-a-template)).
 
-## Verification
+## Replay
 
-`replay(scenarioJson, stepsJson, apps)` re-runs a recorded session. A verifier fetches the scenario
-and the exact app versions it references from the same registries, then replays the session.
+`replay(scenarioJson, filesJson, stepsJson, apps)` re-runs a recorded session on a fresh engine and
+returns its status; it is how `solution.json` files are checked. Because app versions never change,
+the same scenario, files, apps and steps always give the same verdict. Scoring and leaderboards are
+separate services (`VITE_SCORES_URL`) and not part of the registry.
