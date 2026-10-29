@@ -18,7 +18,7 @@ Apps are artifacts, like container images:
 ## How a run works
 
 - **Arguments.** `argv[0]` is the image reference and `argv[1]` the image's `config`, as JSON.
-- **Environment.** The container's literal `env` values. `valueFrom` entries are not resolved yet.
+- **Environment.** What the pod spec gives the container, resolved when it starts: `env` values (with `$(VAR)` expansion), `valueFrom` references to ConfigMap and Secret keys and to the pod's own fields, and `envFrom` sources. A missing ConfigMap, Secret or key keeps the container from starting (`CreateContainerConfigError`) until it exists. Secret values are decoded byte for byte, a trailing newline included.
 - **Output.** Every line written to stdout or stderr becomes a container log line, stamped with
   the simulated second it was written in.
 - **Time is simulated.** The whole run is computed at container start against a virtual clock:

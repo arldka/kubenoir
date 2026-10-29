@@ -531,7 +531,7 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn base64_decode(text: &str) -> Option<Vec<u8>> {
     let cleaned: Vec<u8> = text.bytes().filter(|b| *b != b'\n' && *b != b'\r').collect();
     if !cleaned.len().is_multiple_of(4) {
         return None;

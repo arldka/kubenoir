@@ -882,7 +882,20 @@ fn apply_defaults(info: &KindInfo, name: &str, object: &mut Value) {
             set_default(obj(&mut object["spec"]), "finalizers", json!(["kubernetes"]));
             set_default(obj(&mut object["status"]), "phase", json!("Active"));
         }
-        "Secret" => set_default(obj(object), "type", json!("Opaque")),
+        "Secret" => {
+            set_default(obj(object), "type", json!("Opaque"));
+            // `stringData` is write-only: the API server stores it base64 encoded in `data`, where
+            // it wins over an existing key of the same name.
+            let strings = object.as_object_mut().and_then(|o| o.remove("stringData"));
+            if let Some(Value::Object(strings)) = strings {
+                let data = obj(obj(object).entry("data").or_insert_with(|| json!({})));
+                for (key, value) in strings {
+                    if let Some(text) = value.as_str() {
+                        data.insert(key, json!(crate::shell::base64_encode(text.as_bytes())));
+                    }
+                }
+            }
+        }
         "Node" => {
             // What a kubelet reports for a healthy node; authored status wins.
             let status = obj(&mut object["status"]);

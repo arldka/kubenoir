@@ -5,6 +5,7 @@
 //! not the time they were observed, so that `advance(60)` equals sixty `advance(1)` calls.
 
 pub mod config;
+mod container_env;
 mod deployment;
 mod kubelet;
 mod namespace;

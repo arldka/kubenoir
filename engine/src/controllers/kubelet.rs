@@ -19,7 +19,7 @@ use k8s_openapi::api::core::v1::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{pod_identity, pods, Env};
+use super::{container_env, pod_identity, pods, Env};
 use crate::apps::{self, Launch, Program};
 use crate::clock;
 use crate::events::{self, EventType, Involved, Source};
@@ -73,6 +73,10 @@ struct Runtime {
     #[serde(default)]
     ready: bool,
     last: Option<Terminated>,
+    /// Why the container cannot be created yet (a ConfigMap or Secret it refers to is missing);
+    /// the kubelet tries again every [`BACKOFF_BASE_SECS`].
+    #[serde(default)]
+    config_error: Option<String>,
 }
 
 enum Step {
@@ -96,6 +100,7 @@ impl Runtime {
             lines_emitted: 0,
             ready: false,
             last: None,
+            config_error: None,
         }
     }
 
@@ -129,6 +134,8 @@ impl Runtime {
 
 struct PodCtx<'a> {
     env: &'a Env<'a>,
+    /// The pod as it was when this pass began (its fields feed `fieldRef` variables).
+    pod: Pod,
     namespace: String,
     name: String,
     uid: String,
@@ -250,6 +257,7 @@ fn step_pod(env: &Env<'_>, mut pod: Pod) -> Result<bool, StoreError> {
 
     let ctx = PodCtx {
         env,
+        pod: pod.clone(),
         namespace: namespace.clone(),
         name: name.clone(),
         uid,
@@ -313,6 +321,34 @@ fn apply(ctx: &PodCtx<'_>, container: &Container, rt: &mut Runtime, t: i64, step
     match step {
         Step::Start => {
             let first_start = rt.phase == Phase::Creating;
+            // The environment is read now, at the start; a running container keeps what it got.
+            let resolved = match container_env::resolve(ctx.env.store, &ctx.pod, container)? {
+                Ok(resolved) => resolved,
+                Err(message) => {
+                    let c = Some(container.name.as_str());
+                    if first_start && rt.config_error.is_none() {
+                        let pulled = format!(
+                            "Successfully pulled image \"{image}\" in {}s",
+                            ctx.env.config.pull_seconds(&image)
+                        );
+                        ctx.event(c, EventType::Normal, "Pulled", &pulled, t)?;
+                    }
+                    ctx.event(c, EventType::Warning, "Failed", &format!("Error: {message}"), t)?;
+                    rt.config_error = Some(message);
+                    rt.due = t + BACKOFF_BASE_SECS;
+                    return Ok(());
+                }
+            };
+            rt.config_error = None;
+            for warning in &resolved.warnings {
+                ctx.event(
+                    Some(&container.name),
+                    EventType::Warning,
+                    "InvalidEnvironmentVariableNames",
+                    warning,
+                    t,
+                )?;
+            }
             if first_start {
                 rt.instance = 0;
             } else {
@@ -324,7 +360,7 @@ fn apply(ctx: &PodCtx<'_>, container: &Container, rt: &mut Runtime, t: i64, step
                 ctx.env.config.images.get(&image),
                 &Launch {
                     image: &image,
-                    env: &effective_env(container),
+                    env: &resolved.env,
                     started_at: t,
                     seed: names::fnv1a(format!("{}/{}/{}", ctx.uid, container.name, rt.instance).as_bytes()),
                 },
@@ -411,23 +447,6 @@ fn apply(ctx: &PodCtx<'_>, container: &Container, rt: &mut Runtime, t: i64, step
         }
     }
     Ok(())
-}
-
-/// Literal env values the process would see. `valueFrom` references are not simulated yet.
-fn effective_env(container: &Container) -> BTreeMap<String, String> {
-    let mut env = BTreeMap::new();
-    for var in container.env.iter().flatten() {
-        match (&var.value, &var.value_from) {
-            (Some(value), _) => {
-                env.insert(var.name.clone(), value.clone());
-            }
-            (None, None) => {
-                env.insert(var.name.clone(), String::new());
-            }
-            (None, Some(_)) => {}
-        }
-    }
-    env
 }
 
 /// Mirror runtime state into `pod.status`.
@@ -531,6 +550,11 @@ fn container_status(c: &Container, rt: Option<&Runtime>, namespace: &str, pod: &
         }),
         ..Default::default()
     };
+    if let Some(message) = rt.config_error.as_ref().filter(|_| rt.phase != Phase::Running) {
+        status.state = Some(waiting("CreateContainerConfigError", Some(message.clone())));
+        status.last_state = rt.last.as_ref().map(terminated);
+        return status;
+    }
     match rt.phase {
         Phase::Creating => status.state = Some(waiting("ContainerCreating", None)),
         Phase::Running => {
