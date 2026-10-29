@@ -27,6 +27,8 @@ pub struct Engine {
     now: i64,
     /// Text files the player's commands can read (`kubectl apply -f`).
     files: Files,
+    /// The file `vim` asked the terminal to open, until the terminal takes it.
+    editor_request: Option<String>,
 }
 
 /// One recorded player input. Replaying a list of these on a fresh engine reproduces the
@@ -51,6 +53,7 @@ impl Engine {
             judge: Judge::new(cluster.rules),
             now: clock::secs(&cluster.started_at),
             files: cluster.files,
+            editor_request: None,
         };
         // Let the control plane notice the seeded objects, then live through the history the
         // scenario asks for so the player starts at `now` with a cluster that has a past.
@@ -164,6 +167,16 @@ impl Engine {
             .is_ok_and(|all| all.iter().any(|o| o["metadata"].get("deletionTimestamp").is_some()))
     }
 
+    /// The text of one of the terminal's files, if it exists.
+    pub fn read_file(&self, path: &str) -> Option<String> {
+        self.files.get(&normalize_path(path)).cloned()
+    }
+
+    /// The file `vim` was last asked to open, once: the terminal then shows its editor.
+    pub fn take_editor_request(&mut self) -> Option<String> {
+        self.editor_request.take()
+    }
+
     /// Create or overwrite a text file the terminal's commands can read.
     pub fn write_file(&mut self, path: &str, contents: &str) {
         self.files.insert(normalize_path(path), contents.to_string());
@@ -178,6 +191,9 @@ impl Engine {
             now: self.now,
         };
         let ran = shell::run(line, &env, &mut self.files);
+        if ran.editor.is_some() {
+            self.editor_request = ran.editor.clone();
+        }
         for executed in &ran.executed {
             self.judge
                 .record_command(&executed.command, &executed.touched, &executed.output, self.now);

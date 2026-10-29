@@ -25,6 +25,7 @@ const VERBS: &[&str] = &[
     "describe",
     "logs",
     "exec",
+    "vim",
     "set-env",
     "rollout-restart",
     "delete",
@@ -460,6 +461,7 @@ fn matches_command(matcher: &CommandMatcher, command: &Command, touched: &[Touch
             kind.is_none_or(|k| k == a.kind) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
         }
         ("logs", Command::Logs(a)) => wanted(a.resource) && named(&[a.name.as_str()]),
+        ("vim", Command::Vim(a)) => named(&[a.paths[0].as_str()]),
         ("exec", Command::Exec(a)) => kind.is_none_or(|k| k == "Pod") && named(&[a.pod.as_str()]),
         ("set-env", Command::SetEnv(a)) => {
             wanted(a.resource) && named(&[a.name.as_str()]) && matcher.list.is_none_or(|l| l == a.list)

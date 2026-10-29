@@ -34,6 +34,8 @@ pub fn execute(command: &Command, env: &Env<'_>, files: &Files) -> (String, Vec<
         Command::Patch(args) => crate::patch::patch(args, env),
         Command::Cat(args) => Ok(printed(crate::fs::cat(&args.paths, files).display())),
         Command::Ls(args) => Ok(printed(crate::fs::ls(&args.paths, files).display())),
+        // The shell opens the editor; there is nothing for the cluster to execute.
+        Command::Vim(_) => Ok(printed(String::new())),
         Command::Run(args) => crate::imperative::run(args, env).map(printed),
         Command::CreateObject(args) => crate::imperative::create_object(args, env, files).map(printed),
         Command::SetImage(args) => crate::imperative::set_image(args, env).map(printed),

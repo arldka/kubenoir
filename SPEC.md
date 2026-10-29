@@ -95,7 +95,7 @@ T7|x|minimal shell: tokenizer w/ pipes, `echo -n`, `base64 -d`, `grep`, `head`|I
 T8|x|output fidelity: `-o yaml\|json\|name\|wide\|jsonpath`, `-l`, `-A`, golden tests vs real kubectl captures|V6,I.cmd
 T9|x|`--help` ∀ verb + `explain` from `k8s-openapi` docs|V7
 T10|x|unsupported verb/flag/kind errors audit|V5
-T35|.|engine: `vim`\|`vi` FILE command (parse, path rules, queue editor request), `Engine.readFile`, `takeEditorRequest`; judge verb `vim` (name = path); help page|C12,V5,V27,I.shell,I.js
+T35|x|engine: `vim`\|`vi` FILE command (parse, path rules, queue editor request), `Engine.readFile`, `takeEditorRequest`; judge verb `vim` (name = path); help page|C12,V5,V27,I.shell,I.js
 T36|.|`frontend/src/lib/terminal/vim.ts`: modal editor state machine, vitest-covered (incl. failed-exit counter): normal/insert/ex modes; h j k l w b e 0 $ gg G; i a I A o O; x dd yy p P u Ctrl-R; counts; `:w :q :wq :x :q!`; Tab→spaces, auto-indent|V24,V25,V26,V27,V29,I.ui
 T37|.|terminal integration: full-screen render (alt screen, mode/`[+]` status line, `~` rows), key routing in `session.ts`, `:w` → `Engine.writeFile`, back to prompt on quit; e2e: edit a manifest then `kubectl apply -f` it; fail to quit 3× → scolded, then `:q!` leaves|V24,V25,V29,I.js
 T38|x|`kubectl edit` → boss's reprimand (parse error variant printed as is, stderr in pipelines)|C12,V28

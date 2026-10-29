@@ -212,6 +212,8 @@ pub enum Command {
     Patch(PatchArgs),
     Cat(PathArgs),
     Ls(PathArgs),
+    /// `vim FILE` / `vi FILE`: open the terminal editor on one of the terminal's own files.
+    Vim(PathArgs),
     /// `kubectl --help` (topic `""`) or `kubectl COMMAND --help` (see `help`).
     Help(String),
     Explain(ExplainArgs),
@@ -554,6 +556,7 @@ pub fn parse_words(words: &[String]) -> Result<Command, ParseError> {
         None => return Err(ParseError::Empty),
         Some("kubectl") => {}
         Some(builtin @ ("cat" | "ls")) => return parse_paths(builtin, tokens.collect()),
+        Some(editor @ ("vim" | "vi")) => return parse_vim(editor, tokens.collect()),
         Some(other) => return Err(ParseError::UnknownCommand(other.to_string())),
     }
 
@@ -1249,6 +1252,27 @@ fn parse_paths(command: &str, args: Vec<&str>) -> Result<Command, ParseError> {
     } else {
         Command::Ls(args)
     })
+}
+
+fn parse_vim(command: &str, args: Vec<&str>) -> Result<Command, ParseError> {
+    let mut paths = Vec::new();
+    for arg in args {
+        if is_flag(arg) && arg != "-" {
+            return Err(ParseError::Builtin(format!(
+                "{command}: unknown option '{arg}': options are not available in this editor"
+            )));
+        }
+        paths.push(arg.to_string());
+    }
+    match paths.len() {
+        0 => Err(ParseError::Builtin(format!(
+            "{command}: no file given; usage: {command} FILE"
+        ))),
+        1 => Ok(Command::Vim(PathArgs { paths })),
+        _ => Err(ParseError::Builtin(format!(
+            "{command}: one file at a time; usage: {command} FILE"
+        ))),
+    }
 }
 
 const NAMESPACE_FLAG: &str = "-n, --namespace";

@@ -21,6 +21,25 @@ fn is_dir(files: &Files, dir: &str) -> bool {
     dir.is_empty() || files.keys().any(|f| f.starts_with(&format!("{dir}/")))
 }
 
+/// `vim FILE`: whether the editor may open `path` (a new file is fine; nothing is created until
+/// the player saves).
+pub fn open_for_editing(path: &str, files: &Files) -> Output {
+    let fail = |message: String| Output {
+        stdout: String::new(),
+        stderr: vec![message],
+    };
+    let normalized = key(path);
+    if path.starts_with(['/', '~']) || normalized.split('/').any(|segment| segment == "..") {
+        return fail(format!(
+            "vim: {path}: files outside the terminal's own are not available; use a relative path"
+        ));
+    }
+    if normalized.is_empty() || is_dir(files, &normalized) {
+        return fail(format!("vim: {path}: Is a directory"));
+    }
+    Output::default()
+}
+
 /// The names directly inside `dir`, sorted.
 fn children(files: &Files, dir: &str) -> Vec<String> {
     let prefix = if dir.is_empty() {

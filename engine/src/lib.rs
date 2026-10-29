@@ -121,6 +121,18 @@ impl WasmEngine {
         self.0.write_file(path, contents);
     }
 
+    /// The text of one of the terminal's files, or undefined if there is no such file.
+    #[wasm_bindgen(js_name = readFile)]
+    pub fn read_file(&self, path: &str) -> Option<String> {
+        self.0.read_file(path)
+    }
+
+    /// The file `vim` was asked to open (once), or undefined: the terminal then shows its editor.
+    #[wasm_bindgen(js_name = takeEditorRequest)]
+    pub fn take_editor_request(&mut self) -> Option<String> {
+        self.0.take_editor_request()
+    }
+
     /// How the case stands, as JSON: `solved`, `outcome`, `findings`, and a `report` once closed.
     pub fn status(&self) -> String {
         serde_json::to_string(&self.0.status()).unwrap_or_else(|_| "{}".into())

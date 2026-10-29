@@ -27,6 +27,8 @@ pub struct Executed {
 pub struct Line {
     pub output: String,
     pub executed: Vec<Executed>,
+    /// The file `vim` asked the terminal to open.
+    pub editor: Option<String>,
     /// Seconds the line asked the clock to move (`sleep`), for the engine to let pass.
     pub sleep_secs: i64,
 }
@@ -184,6 +186,7 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
     let fail = |message: String| Line {
         output: message,
         executed: Vec::new(),
+        editor: None,
         sleep_secs: 0,
     };
     let mut sleep_secs = 0;
@@ -207,6 +210,13 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
             }
         };
         let name = words.first().map(String::as_str).unwrap_or_default();
+        if matches!(name, "vim" | "vi") && (parsed.stages.len() > 1 || parsed.redirect.is_some()) {
+            stderr.push(format!(
+                "{name}: the editor takes the whole terminal: run it on its own, without pipes or redirects"
+            ));
+            stdin = String::new();
+            continue;
+        }
         let filtered = try_filter(name, &words[1..], &stdin, files);
         let result = match name {
             "sleep" => match sleep(&words[1..]) {
@@ -270,9 +280,14 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
         }
         output = String::new();
     }
+    let editor = executed.iter().find_map(|e| match &e.command {
+        Command::Vim(args) if e.output.is_empty() => args.paths.first().map(|p| normalize_path(p)),
+        _ => None,
+    });
     Line {
         output: Output { stdout: output, stderr }.display(),
         executed,
+        editor,
         sleep_secs,
     }
 }
@@ -404,6 +419,7 @@ fn run_command(command: Command, env: &Env<'_>, files: &Files, executed: &mut Ve
     let result = match &command {
         Command::Cat(args) => fs::cat(&args.paths, files),
         Command::Ls(args) => fs::ls(&args.paths, files),
+        Command::Vim(args) => crate::fs::open_for_editing(&args.paths[0], files),
         other => {
             let (text, touched) = execute(other, env, files);
             let out = if is_error_output(&text) {

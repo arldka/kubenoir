@@ -608,6 +608,20 @@ pub struct ShellCommand {
 
 pub const SHELL: &[ShellCommand] = &[
     ShellCommand {
+        name: "vim",
+        usage: "vim FILE",
+        summary: "Edit one of the terminal's own files (a small vi: i a o to insert, :w to save, :q to leave). Save the manifest, then kubectl apply -f it.",
+        flags: &[],
+        sample: "a.txt",
+    },
+    ShellCommand {
+        name: "vi",
+        usage: "vi FILE",
+        summary: "The same as vim.",
+        flags: &[],
+        sample: "a.txt",
+    },
+    ShellCommand {
         name: "sleep",
         usage: "sleep NUMBER[SUFFIX]...",
         summary: "Wait: let the cluster run on for NUMBER seconds (SUFFIX: s, m, h, d; at most an hour in one go).",
