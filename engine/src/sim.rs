@@ -11,6 +11,7 @@ use crate::complete::{complete, Completion};
 use crate::controllers::{self, config::ClusterConfig, Env};
 use crate::exec::execute;
 use crate::judge::{Judge, Status};
+use crate::manifests::{normalize_path, Files};
 use crate::parser::parse;
 use crate::scenario::{load, ScenarioError};
 use crate::store::ClusterStore;
@@ -25,6 +26,8 @@ pub struct Engine {
     judge: Judge,
     /// Simulated time, epoch seconds.
     now: i64,
+    /// Text files the player's commands can read (`kubectl apply -f`).
+    files: Files,
 }
 
 /// One recorded player input. Replaying a list of these on a fresh engine reproduces the
@@ -47,6 +50,7 @@ impl Engine {
             config: cluster.config,
             judge: Judge::new(cluster.rules),
             now: clock::secs(&cluster.started_at),
+            files: Files::new(),
         };
         // Let the control plane notice the seeded objects, then live through the history the
         // scenario asks for so the player starts at `now` with a cluster that has a past.
@@ -139,6 +143,11 @@ impl Engine {
         }
     }
 
+    /// Create or overwrite a text file the terminal's commands can read.
+    pub fn write_file(&mut self, path: &str, contents: &str) {
+        self.files.insert(normalize_path(path), contents.to_string());
+    }
+
     /// Evaluate one terminal command line and return the text to print.
     /// Never panics: parse errors come back as kubectl-style error strings.
     pub fn eval(&mut self, cmd: &str) -> String {
@@ -151,6 +160,7 @@ impl Engine {
                         config: &self.config,
                         now: self.now,
                     },
+                    &self.files,
                 );
                 self.judge.record_command(&command, &out, self.now);
                 // Commands may have changed desired state; let the cluster react right away.

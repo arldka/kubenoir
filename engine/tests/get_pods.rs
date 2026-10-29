@@ -76,7 +76,11 @@ fn errors_read_like_kubectl() {
     );
     assert_eq!(
         e.eval("kubectl apply -f x.yaml"),
-        "error: unknown command \"apply\" for \"kubectl\""
+        "error: the path \"x.yaml\" does not exist"
+    );
+    assert_eq!(
+        e.eval("kubectl port-forward web 8080"),
+        "error: unknown command \"port-forward\" for \"kubectl\""
     );
 }
 

@@ -11,6 +11,7 @@ use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use serde::Deserialize;
 
+use crate::api;
 use crate::apps::{self, AppSet};
 use crate::controllers::config::{ClusterConfig, ImageSpec};
 use crate::judge::{Finding, Rules, Success};
@@ -62,6 +63,7 @@ pub enum ScenarioError {
     Rules(String),
     Image(String),
     Store(StoreError),
+    Api(api::ApiError),
 }
 
 impl fmt::Display for ScenarioError {
@@ -75,11 +77,21 @@ impl fmt::Display for ScenarioError {
             ScenarioError::Rules(reason) => write!(f, "invalid scenario rules: {reason}"),
             ScenarioError::Image(reason) => write!(f, "invalid scenario image: {reason}"),
             ScenarioError::Store(e) => write!(f, "invalid scenario: {e}"),
+            ScenarioError::Api(e) => write!(f, "invalid scenario: {}", e.message()),
         }
     }
 }
 
 impl std::error::Error for ScenarioError {}
+
+impl From<api::ApiError> for ScenarioError {
+    fn from(e: api::ApiError) -> Self {
+        match e {
+            api::ApiError::Store(e) => ScenarioError::Store(e),
+            other => ScenarioError::Api(other),
+        }
+    }
+}
 
 impl From<StoreError> for ScenarioError {
     fn from(e: StoreError) -> Self {
@@ -132,6 +144,12 @@ pub fn load(json: &str, apps: AppSet) -> Result<Cluster, ScenarioError> {
     }
     let store = ClusterStore::new()?;
     store.set_seed(names::seed_for(&scenario.id));
+    let started_at = scenario
+        .cluster
+        .started_at
+        .clone()
+        .unwrap_or_else(|| scenario.cluster.now.clone());
+    api::seed_system_namespaces(&store, crate::clock::secs(&started_at))?;
 
     for (index, mut pod) in scenario.cluster.pods.into_iter().enumerate() {
         let name = pod
@@ -169,7 +187,6 @@ pub fn load(json: &str, apps: AppSet) -> Result<Cluster, ScenarioError> {
     }
 
     let now = scenario.cluster.now;
-    let started_at = scenario.cluster.started_at.unwrap_or_else(|| now.clone());
     let warmup = now.0.as_second() - started_at.0.as_second();
     if warmup < 0 {
         return Err(ScenarioError::Timeline("cluster.startedAt is after cluster.now".into()));

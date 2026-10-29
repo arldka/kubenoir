@@ -136,6 +136,13 @@ pub struct DeleteArgs {
     pub immediate: bool,
 }
 
+/// `-f` files for `apply`, `create` and `delete`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestArgs {
+    pub files: Vec<String>,
+    pub namespace: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Get(GetArgs),
@@ -144,6 +151,9 @@ pub enum Command {
     SetEnv(SetEnvArgs),
     RolloutRestart(RolloutRestartArgs),
     Delete(DeleteArgs),
+    Apply(ManifestArgs),
+    Create(ManifestArgs),
+    DeleteFiles(ManifestArgs),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +185,13 @@ pub enum ParseError {
     MissingName,
     InvalidEnvSpec(String),
     SetEnvNoChanges,
+    /// `apply` / `create` without `-f`.
+    MissingFilename,
+    /// Both `-f` and resource arguments.
+    FilesAndResources,
+    /// A real kubectl feature this terminal does not offer.
+    Unsupported(&'static str),
+    UnexpectedArgs(Vec<String>),
 }
 
 impl fmt::Display for ParseError {
@@ -226,6 +243,12 @@ impl fmt::Display for ParseError {
             ParseError::MissingName => write!(f, "error: resource(s) were provided, but no name was specified"),
             ParseError::InvalidEnvSpec(spec) => write!(f, "error: invalid environment variable \"{spec}\""),
             ParseError::SetEnvNoChanges => write!(f, "error: at least one environment variable must be provided"),
+            ParseError::MissingFilename => write!(f, "error: must specify one of -f and -k"),
+            ParseError::FilesAndResources => {
+                write!(f, "error: resource names and -f cannot be used together")
+            }
+            ParseError::Unsupported(what) => write!(f, "error: {what} is not available in this terminal"),
+            ParseError::UnexpectedArgs(args) => write!(f, "error: Unexpected args: [{}]", args.join(" ")),
         }
     }
 }
@@ -292,7 +315,15 @@ pub fn parse(input: &str) -> Result<Command, ParseError> {
         "get" => parse_get(&rest).map(Command::Get),
         "describe" => parse_describe(&rest).map(Command::Describe),
         "logs" => parse_logs(&rest).map(Command::Logs),
-        "delete" => parse_delete(&rest).map(Command::Delete),
+        "delete" => parse_delete(&rest),
+        "apply" => parse_manifest_args(&rest).map(Command::Apply),
+        "create" => match rest.first() {
+            Some(sub) if !is_flag(sub) => Err(ParseError::UnknownSubcommand {
+                parent: "create",
+                name: sub.to_string(),
+            }),
+            _ => parse_manifest_args(&rest).map(Command::Create),
+        },
         "set" => match rest.split_first() {
             Some((&"env", args)) => parse_set_env(args).map(Command::SetEnv),
             Some((other, _)) => Err(ParseError::UnknownSubcommand {
@@ -505,15 +536,18 @@ fn parse_logs(args: &[&str]) -> Result<LogsArgs, ParseError> {
     })
 }
 
-fn parse_delete(args: &[&str]) -> Result<DeleteArgs, ParseError> {
+fn parse_delete(args: &[&str]) -> Result<Command, ParseError> {
     let mut positional = ResourceArgs::default();
+    let mut has_positional = false;
     let mut namespace: Option<String> = None;
     let mut immediate = false;
+    let mut files: Vec<String> = Vec::new();
 
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
         if let Some(ns) = take_namespace(arg, &mut iter)? {
             namespace = Some(ns);
+        } else if take_files(arg, &mut iter, &mut files)? {
         } else if arg == "--force" || arg == "--now" {
             immediate = true;
         } else if let Some(value) = take_long(arg, "--grace-period", &mut iter)? {
@@ -526,19 +560,83 @@ fn parse_delete(args: &[&str]) -> Result<DeleteArgs, ParseError> {
             return Err(unknown_flag(arg));
         } else {
             positional.push(arg)?;
+            has_positional = true;
         }
     }
 
+    if !files.is_empty() {
+        if has_positional {
+            return Err(ParseError::FilesAndResources);
+        }
+        return Ok(Command::DeleteFiles(ManifestArgs { files, namespace }));
+    }
     let (resource, names) = positional.finish("delete")?;
     if names.is_empty() {
         return Err(ParseError::MissingName);
     }
-    Ok(DeleteArgs {
+    Ok(Command::Delete(DeleteArgs {
         resource,
         names,
         namespace,
         immediate,
-    })
+    }))
+}
+
+/// If `arg` is a file flag (`-f x`, `-fx`, `--filename x`, `--filename=x`), consume it and add
+/// its comma-separated paths to `files`. Kustomize directories and stdin are refused.
+fn take_files<'a>(
+    arg: &str,
+    iter: &mut impl Iterator<Item = &'a str>,
+    files: &mut Vec<String>,
+) -> Result<bool, ParseError> {
+    if arg == "-k" || arg.starts_with("--kustomize") || (arg.starts_with("-k") && !arg.starts_with("--")) {
+        return Err(ParseError::Unsupported("kustomize (-k)"));
+    }
+    let value = if arg == "-f" {
+        flag_value(iter, "-f, --filename")?.to_string()
+    } else if let Some(value) = take_long(arg, "--filename", iter)? {
+        value
+    } else if let Some(value) = arg
+        .strip_prefix("-f")
+        .filter(|v| !v.is_empty() && !arg.starts_with("--"))
+    {
+        value.to_string()
+    } else {
+        return Ok(false);
+    };
+    for path in value.split(',').filter(|p| !p.is_empty()) {
+        if path == "-" {
+            return Err(ParseError::Unsupported("reading manifests from stdin (-f -)"));
+        }
+        files.push(path.to_string());
+    }
+    Ok(true)
+}
+
+/// `apply` / `create`: `-f FILE...` and `-n`.
+fn parse_manifest_args(args: &[&str]) -> Result<ManifestArgs, ParseError> {
+    let mut namespace: Option<String> = None;
+    let mut files: Vec<String> = Vec::new();
+    let mut unexpected: Vec<String> = Vec::new();
+
+    let mut iter = args.iter().copied();
+    while let Some(arg) = iter.next() {
+        if let Some(ns) = take_namespace(arg, &mut iter)? {
+            namespace = Some(ns);
+        } else if take_files(arg, &mut iter, &mut files)? {
+        } else if is_flag(arg) {
+            return Err(unknown_flag(arg));
+        } else {
+            unexpected.push(arg.to_string());
+        }
+    }
+    if !unexpected.is_empty() {
+        return Err(ParseError::UnexpectedArgs(unexpected));
+    }
+    if files.is_empty() {
+        return Err(ParseError::MissingFilename);
+    }
+    Ok(ManifestArgs { files, namespace })
 }
 
 fn parse_rollout_restart(args: &[&str]) -> Result<RolloutRestartArgs, ParseError> {

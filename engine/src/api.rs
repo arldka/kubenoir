@@ -30,6 +30,7 @@ pub struct KindInfo {
     /// Resource name (`pods`), as in URLs and kubectl messages.
     pub plural: &'static str,
     pub singular: &'static str,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub short_names: &'static [&'static str],
     /// Cluster-scoped kinds are stored with an empty namespace.
     pub namespaced: bool,
@@ -100,12 +101,15 @@ static KINDS: [KindInfo; 9] = [
 ];
 
 /// Every known kind, sorted by kind name.
+// Used by kubectl resource arguments and judge selectors (SPEC T4, T8).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn kinds() -> &'static [KindInfo] {
     &KINDS
 }
 
 /// The kind a kubectl resource argument names: plural, singular, short name or kind, any case,
 /// optionally qualified by group (`deployments.apps`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn kind_for_arg(arg: &str) -> Option<&'static KindInfo> {
     let arg = arg.to_ascii_lowercase();
     let (name, group) = match arg.split_once('.') {
@@ -249,16 +253,21 @@ pub enum Origin {
     Client,
     /// Authored cluster state (a scenario's manifests): keep what the author wrote, so objects
     /// can carry a status and a past.
+    // Used by the scenario manifest loader (SPEC T3).
+    #[cfg_attr(not(test), allow(dead_code))]
     Authored,
 }
 
 /// An object as stored.
 #[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct Stored {
     pub info: &'static KindInfo,
     pub namespace: String,
     pub name: String,
     pub manifest: Value,
+    /// False when an update asked for exactly what was already stored (nothing was written).
+    pub changed: bool,
 }
 
 /// Create the namespaces every cluster has. Idempotent.
@@ -369,6 +378,20 @@ pub fn update(store: &ClusterStore, manifest: &Value, namespace: &str) -> Result
         let generation = current["metadata"]["generation"].as_i64().unwrap_or(1) + 1;
         object["metadata"]["generation"] = json!(generation);
     }
+    // Identical desired state is not a write: no new resourceVersion (`kubectl apply` says
+    // "unchanged").
+    if let Some(version) = current["metadata"].get("resourceVersion") {
+        object["metadata"]["resourceVersion"] = version.clone();
+    }
+    if object == current {
+        return Ok(Stored {
+            info,
+            namespace,
+            name,
+            manifest: current,
+            changed: false,
+        });
+    }
     store.update(info.kind, &namespace, &name, &object)?;
     stored(store, info, namespace, name)
 }
@@ -388,6 +411,7 @@ fn stored(store: &ClusterStore, info: &'static KindInfo, namespace: String, name
         namespace,
         name,
         manifest,
+        changed: true,
     })
 }
 

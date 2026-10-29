@@ -7,13 +7,14 @@ use crate::clock;
 use crate::controllers::Env;
 use crate::describe::describe;
 use crate::logs::logs;
+use crate::manifests::{self, Files};
 use crate::mutate;
 use crate::parser::{Command, GetArgs, OutputFormat};
 use crate::render::render;
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
-pub fn execute(command: &Command, env: &Env<'_>) -> String {
+pub fn execute(command: &Command, env: &Env<'_>, files: &Files) -> String {
     let result = match command {
         Command::Get(args) => get(args, env.store, &clock::to_time(env.now)),
         Command::Describe(args) => describe(args, env.store, env.now),
@@ -21,6 +22,9 @@ pub fn execute(command: &Command, env: &Env<'_>) -> String {
         Command::SetEnv(args) => mutate::set_env(args, env),
         Command::RolloutRestart(args) => mutate::rollout_restart(args, env),
         Command::Delete(args) => mutate::delete(args, env),
+        Command::Apply(args) => manifests::apply(args, env, files),
+        Command::Create(args) => manifests::create(args, env, files),
+        Command::DeleteFiles(args) => manifests::delete(args, env, files),
     };
     result.unwrap_or_else(|e| format!("error: {e}"))
 }
@@ -81,7 +85,7 @@ mod tests {
             config: &cluster.config,
             now: clock::secs(&cluster.now),
         };
-        execute(&parse(cmd).unwrap(), &env)
+        execute(&parse(cmd).unwrap(), &env, &Files::new())
     }
 
     #[test]

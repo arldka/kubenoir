@@ -1,8 +1,6 @@
 //! Engine entry point. This file is the only WASM boundary; simulation, parsing and state
 //! live in plain-Rust modules.
 
-// Not called outside tests until `apply` and the scenario loader use it (SPEC T2, T3).
-#[cfg_attr(not(test), allow(dead_code))]
 mod api;
 mod apps;
 mod clock;
@@ -13,6 +11,7 @@ mod events;
 mod exec;
 mod judge;
 mod logs;
+mod manifests;
 mod mutate;
 mod names;
 mod parser;
@@ -84,6 +83,12 @@ impl WasmEngine {
     /// Current simulated time, RFC 3339.
     pub fn now(&self) -> String {
         self.0.now()
+    }
+
+    /// Create or overwrite a text file the terminal can read (`kubectl apply -f <path>`).
+    #[wasm_bindgen(js_name = writeFile)]
+    pub fn write_file(&mut self, path: &str, contents: &str) {
+        self.0.write_file(path, contents);
     }
 
     /// How the case stands, as JSON: `solved`, `outcome`, `findings`, and a `report` once closed.

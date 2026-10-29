@@ -159,48 +159,64 @@ pub fn delete(args: &DeleteArgs, env: &Env<'_>) -> Result<String, StoreError> {
     }
 
     for name in &args.names {
-        let Some(manifest) = env.store.get(kind, namespace, name)? else {
+        if delete_object(env, kind, namespace, name, args.immediate)? {
+            lines.push(format!("{} \"{name}\" deleted", args.resource.name_prefix()));
+        } else {
             lines.push(not_found(args.resource, name));
-            continue;
-        };
-        match args.resource {
-            ResourceKind::Pod => delete_pod(env, &serde_json::from_value::<Pod>(manifest)?, args.immediate)?,
-            ResourceKind::Event => {
-                env.store.delete(kind, namespace, name)?;
-            }
-            ResourceKind::ReplicaSet => {
-                let rs: ReplicaSet = serde_json::from_value(manifest)?;
-                delete_owned_pods(
-                    env,
-                    namespace,
-                    rs.metadata.uid.as_deref().unwrap_or_default(),
-                    args.immediate,
-                )?;
-                env.store.delete(kind, namespace, name)?;
-            }
-            ResourceKind::Deployment => {
-                // Cascade like the garbage collector: Deployment -> ReplicaSets -> pods.
-                let deployment: Deployment = serde_json::from_value(manifest)?;
-                let uid = deployment.metadata.uid.as_deref().unwrap_or_default();
-                for rs_manifest in env.store.list("ReplicaSet", namespace)? {
-                    let rs: ReplicaSet = serde_json::from_value(rs_manifest)?;
-                    if is_owned_by(&rs.metadata, uid) {
-                        let rs_name = rs.metadata.name.clone().unwrap_or_default();
-                        delete_owned_pods(
-                            env,
-                            namespace,
-                            rs.metadata.uid.as_deref().unwrap_or_default(),
-                            args.immediate,
-                        )?;
-                        env.store.delete("ReplicaSet", namespace, &rs_name)?;
-                    }
-                }
-                env.store.delete(kind, namespace, name)?;
-            }
         }
-        lines.push(format!("{} \"{name}\" deleted", args.resource.name_prefix()));
     }
     Ok(lines.join("\n"))
+}
+
+/// Delete one object the way the API server and garbage collector would: pods get their grace
+/// period, and Deployments and ReplicaSets take what they own with them. Returns whether the
+/// object existed. Callers handle kinds that cannot be deleted here (namespaces).
+pub fn delete_object(
+    env: &Env<'_>,
+    kind: &str,
+    namespace: &str,
+    name: &str,
+    immediate: bool,
+) -> Result<bool, StoreError> {
+    let Some(manifest) = env.store.get(kind, namespace, name)? else {
+        return Ok(false);
+    };
+    match kind {
+        "Pod" => delete_pod(env, &serde_json::from_value::<Pod>(manifest)?, immediate)?,
+        "ReplicaSet" => {
+            let rs: ReplicaSet = serde_json::from_value(manifest)?;
+            delete_owned_pods(
+                env,
+                namespace,
+                rs.metadata.uid.as_deref().unwrap_or_default(),
+                immediate,
+            )?;
+            env.store.delete(kind, namespace, name)?;
+        }
+        "Deployment" => {
+            // Cascade like the garbage collector: Deployment -> ReplicaSets -> pods.
+            let deployment: Deployment = serde_json::from_value(manifest)?;
+            let uid = deployment.metadata.uid.as_deref().unwrap_or_default();
+            for rs_manifest in env.store.list("ReplicaSet", namespace)? {
+                let rs: ReplicaSet = serde_json::from_value(rs_manifest)?;
+                if is_owned_by(&rs.metadata, uid) {
+                    let rs_name = rs.metadata.name.clone().unwrap_or_default();
+                    delete_owned_pods(
+                        env,
+                        namespace,
+                        rs.metadata.uid.as_deref().unwrap_or_default(),
+                        immediate,
+                    )?;
+                    env.store.delete("ReplicaSet", namespace, &rs_name)?;
+                }
+            }
+            env.store.delete(kind, namespace, name)?;
+        }
+        _ => {
+            env.store.delete(kind, namespace, name)?;
+        }
+    }
+    Ok(true)
 }
 
 fn delete_owned_pods(env: &Env<'_>, namespace: &str, owner_uid: &str, immediate: bool) -> Result<(), StoreError> {
