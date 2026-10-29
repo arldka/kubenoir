@@ -1,0 +1,5 @@
+From the DBA, scribbled in a hurry:
+
+  postgres password for the payments role: correct-horse
+
+Put it in a Secret called db-credentials, key "password". Do NOT paste it into the Deployment.

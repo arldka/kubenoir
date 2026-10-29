@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 2,
+  "id": "sealed-envelope",
+  "title": "The Sealed Envelope",
+  "briefing": "payments-api was deployed this morning and has not started once. The database password was supposed to arrive in an envelope: a Secret named db-credentials, which nobody ever made. The DBA left the password on a sticky note (case/sticky-note.txt). Seal it properly, and make sure the service really gets in: a password that is almost right is as good as none.",
+  "objective": "Put the database password in a Secret and bring payments-api up, connected to the database.",
+  "hints": [
+    "Ask the pod what it is waiting for: `kubectl describe` shows why its container cannot be created.",
+    "The Deployment reads the password from the key `password` of a Secret called db-credentials. The sticky note has the value.",
+    "If the service starts but cannot log in, compare the password byte for byte. A Secret stores base64, and base64 encodes every byte you give it, including the newline that `echo` adds.",
+    "`kubectl create secret generic db-credentials --from-literal=password=...` never adds a newline; neither do `echo -n ... | base64` or `stringData`."
+  ],
+  "success": {
+    "stableSeconds": 15,
+    "assert": [
+      {
+        "label": "payments-api is available",
+        "select": { "kind": "Deployment", "name": "payments-api" },
+        "each": [{ "path": "status.availableReplicas", "equals": 1 }]
+      },
+      {
+        "label": "the payments-api pod is ready and has not been restarted since it got in",
+        "select": { "kind": "Pod", "labels": { "app": "payments-api" } },
+        "count": { "exactly": 1 },
+        "each": [{ "path": "status.conditions[type=Ready].status", "equals": "True" }]
+      },
+      {
+        "label": "the password in the Secret is exactly the one on the note",
+        "select": { "kind": "Secret", "name": "db-credentials" },
+        "each": [{ "path": "data.password", "equals": "Y29ycmVjdC1ob3JzZQ==" }]
+      }
+    ],
+    "constraints": [
+      {
+        "label": "the database was left alone",
+        "select": { "kind": "Pod", "labels": { "app": "postgres" } },
+        "count": { "exactly": 1 },
+        "each": [{ "path": "status.containerStatuses[0].restartCount", "equals": 0 }]
+      },
+      {
+        "label": "payments-api was not deleted and recreated",
+        "forbid": { "verb": "delete", "resource": "deployments", "name": "payments-api" }
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "waiting",
+      "clue": "The container cannot be created: it needs the Secret db-credentials, and it does not exist.",
+      "when": {
+        "anyOf": [
+          { "command": { "verb": "describe", "resource": "pods", "name": "payments-api*" } },
+          { "command": { "verb": "get", "resource": "events" } }
+        ]
+      }
+    },
+    {
+      "id": "note",
+      "clue": "The DBA's note: the payments role's password is correct-horse.",
+      "when": { "command": { "verb": "cat", "name": "case/sticky-note.txt" } }
+    },
+    {
+      "id": "decoded",
+      "clue": "You looked inside the Secret. What is stored there has to match the note exactly: every byte counts.",
+      "when": { "command": { "verb": "get", "resource": "secrets", "name": "db-credentials" } }
+    }
+  ],
+  "images": {
+    "registry.example.com/payments-api:2.4.1": {
+      "pullSeconds": 3,
+      "app": "db-client@0.2.0",
+      "config": { "name": "payments-api", "version": "2.4.1", "databaseUrlEnv": "DATABASE_URL", "portEnv": "PORT" }
+    },
+    "postgres:16": { "pullSeconds": 2, "app": "postgres@0.1.0", "config": {} }
+  },
+  "files": ["case/sticky-note.txt"],
+  "cluster": {
+    "startedAt": "2026-10-27T08:55:00Z",
+    "now": "2026-10-27T09:00:00Z",
+    "manifests": ["manifests/nodes.yaml", "manifests/postgres.yaml", "manifests/payments.yaml"]
+  }
+}

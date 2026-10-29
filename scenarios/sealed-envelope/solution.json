@@ -1,0 +1,7 @@
+[
+  { "kind": "eval", "command": "kubectl get pods" },
+  { "kind": "eval", "command": "kubectl get events" },
+  { "kind": "eval", "command": "cat case/sticky-note.txt" },
+  { "kind": "eval", "command": "kubectl create secret generic db-credentials --from-literal=password=correct-horse" },
+  { "kind": "advance", "seconds": 60 }
+]
