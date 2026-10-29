@@ -81,7 +81,6 @@ T7|x|minimal shell: tokenizer w/ pipes, `echo -n`, `base64 -d`, `grep`, `head`|I
 T8|x|output fidelity: `-o yaml\|json\|name\|wide\|jsonpath`, `-l`, `-A`, golden tests vs real kubectl captures|V6,I.cmd
 T9|x|`--help` ∀ verb + `explain` from `k8s-openapi` docs|V7
 T10|x|unsupported verb/flag/kind errors audit|V5
-T11|.|`get -w` streaming in terminal (engine emits watch events on `advance`)|I.js
 T12|.|`kubectl edit` frontend buffer + engine replace path|V19,I.js
 T13|.|verbs: `run`, `create namespace\|deployment\|configmap\|secret`, `set image`, `scale`, `rollout status\|history\|undo`, `label`, `expose`|I.cmd
 T14|.|Namespace kind + cluster-scoped resources + `namespaces "x" not found`|V1
