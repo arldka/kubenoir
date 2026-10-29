@@ -125,8 +125,17 @@ test('typing makes typewriter sounds, and not while muted', async ({ page }) => 
 	await page.keyboard.press('Enter');
 	await expect.poll(async () => (await audio(page)).starts - before).toBeGreaterThanOrEqual(3);
 
-	// Cursor movement stays silent.
-	const quiet = (await audio(page)).starts;
+	// Cursor movement stays silent. (The real recordings decode in the background and start
+	// playing when they are ready, so wait until the count stops moving before comparing.)
+	let quiet = -1;
+	await expect
+		.poll(async () => {
+			const now = (await audio(page)).starts;
+			const settled = now === quiet;
+			quiet = now;
+			return settled;
+		}, { intervals: [400] })
+		.toBe(true);
 	await page.keyboard.press('ArrowLeft');
 	await page.keyboard.press('ArrowRight');
 	await page.waitForTimeout(200);
