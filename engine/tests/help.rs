@@ -137,7 +137,9 @@ fn explain_can_be_a_finding_but_a_failed_one_is_not() {
 fn completion_offers_the_new_commands_and_documented_flags() {
     let e = engine();
     let verbs = e.complete("kubectl ").candidates;
-    for v in ["apply", "explain", "patch", "replace", "create"] {
+    for v in [
+        "apply", "explain", "patch", "replace", "create", "run", "scale", "label", "expose",
+    ] {
         assert!(verbs.contains(&v.to_string()), "{v}");
     }
     let flags = e.complete("kubectl get pods --").candidates;
@@ -152,4 +154,42 @@ fn completion_offers_the_new_commands_and_documented_flags() {
     }
     // The value of -l is free text, not a pod name.
     assert!(e.complete("kubectl get pods -l ").candidates.is_empty());
+}
+
+#[test]
+fn completion_offers_subcommands_and_their_own_flags() {
+    let e = engine();
+    assert_eq!(e.complete("kubectl set ").candidates, ["env", "image"]);
+    assert_eq!(
+        e.complete("kubectl rollout ").candidates,
+        ["history", "restart", "status", "undo"]
+    );
+    assert_eq!(e.complete("kubectl rollout u").candidates, ["undo"]);
+    assert_eq!(
+        e.complete("kubectl create ").candidates,
+        ["configmap", "deployment", "namespace", "secret"]
+    );
+    assert!(e
+        .complete("kubectl create -")
+        .candidates
+        .contains(&"--filename".to_string()));
+    assert!(e.complete("kubectl create -f x").candidates.is_empty());
+    assert!(e
+        .complete("kubectl rollout undo deployment/web --")
+        .candidates
+        .contains(&"--to-revision".to_string()));
+    let image_flags = e.complete("kubectl set image deployment/web --").candidates;
+    assert!(image_flags.contains(&"--namespace".to_string()) && !image_flags.contains(&"--env".to_string()));
+    assert!(e
+        .complete("kubectl set env deployment/web --")
+        .candidates
+        .contains(&"--env".to_string()));
+    assert!(e
+        .complete("kubectl create deployment web --")
+        .candidates
+        .contains(&"--replicas".to_string()));
+    assert!(e
+        .complete("kubectl scale deployment/web --")
+        .candidates
+        .contains(&"--replicas".to_string()));
 }

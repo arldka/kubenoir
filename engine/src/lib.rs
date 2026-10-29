@@ -12,6 +12,7 @@ mod exec;
 mod explain;
 mod fs;
 mod help;
+mod imperative;
 mod jsonpath;
 mod judge;
 mod logs;

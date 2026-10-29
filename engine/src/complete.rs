@@ -8,8 +8,9 @@ use crate::parser::{shell_split, ResourceKind};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
-const VERBS: [&str; 11] = [
-    "apply", "create", "delete", "describe", "explain", "get", "logs", "patch", "replace", "rollout", "set",
+const VERBS: [&str; 15] = [
+    "apply", "create", "delete", "describe", "explain", "expose", "get", "label", "logs", "patch", "replace",
+    "rollout", "run", "scale", "set",
 ];
 const OUTPUT_FORMATS: [&str; 4] = ["json", "name", "wide", "yaml"];
 /// Plural names offered for resource types; aliases are the fallback when nothing matches.
@@ -90,18 +91,22 @@ fn candidates(previous: &[String], word: &str, store: &ClusterStore) -> Result<V
 
     // Where this verb's own arguments begin.
     let verb = previous[1].as_str();
-    let args_from = match verb {
-        "set" | "rollout" => {
-            let sub = if verb == "set" { "env" } else { "restart" };
-            if position == 2 {
-                return Ok(strings(&[sub]));
-            }
-            if previous[2] != sub {
-                return Ok(Vec::new());
-            }
-            3
-        }
-        _ => 2,
+    let subcommands: &[&str] = match verb {
+        "set" => &["env", "image"],
+        "rollout" => &["history", "restart", "status", "undo"],
+        "create" => &["configmap", "deployment", "namespace", "secret"],
+        _ => &[],
+    };
+    let args_from = if subcommands.is_empty() {
+        2
+    } else if position == 2 && !word.starts_with('-') {
+        return Ok(strings(subcommands));
+    } else if position > 2 && subcommands.contains(&previous[2].as_str()) {
+        3
+    } else if verb == "create" {
+        2 // `create -f FILE`
+    } else {
+        return Ok(Vec::new());
     };
     let args = &previous[args_from..];
     let namespace = namespace_of(args);
@@ -116,7 +121,12 @@ fn candidates(previous: &[String], word: &str, store: &ClusterStore) -> Result<V
         return Ok(values.into_iter().map(|v| format!("{flag}={v}")).collect());
     }
     if word.starts_with('-') {
-        return Ok(crate::help::flags_of(verb).into_iter().map(String::from).collect());
+        let command = if args_from == 3 {
+            format!("{verb} {}", previous[2])
+        } else {
+            verb.to_string()
+        };
+        return Ok(crate::help::flags_of(&command).into_iter().map(String::from).collect());
     }
 
     // Positional arguments (flags and their values removed).
@@ -308,7 +318,10 @@ mod tests {
         assert_eq!(start, 8);
         assert_eq!(
             words(&verbs),
-            ["apply", "create", "delete", "describe", "explain", "get", "logs", "patch", "replace", "rollout", "set"]
+            [
+                "apply", "create", "delete", "describe", "explain", "expose", "get", "label", "logs", "patch",
+                "replace", "rollout", "run", "scale", "set"
+            ]
         );
         assert_eq!(complete("kubectl de").1, ["delete", "describe"]);
         assert_eq!(complete("kubectl lo").1, ["logs"]);
@@ -316,9 +329,10 @@ mod tests {
 
     #[test]
     fn subcommands() {
-        assert_eq!(complete("kubectl set ").1, ["env"]);
+        assert_eq!(complete("kubectl set ").1, ["env", "image"]);
         assert_eq!(complete("kubectl rollout r").1, ["restart"]);
-        assert_eq!(complete("kubectl set image ").1, Vec::<String>::new());
+        assert_eq!(complete("kubectl rollout ").1, ["history", "restart", "status", "undo"]);
+        assert_eq!(complete("kubectl set bogus ").1, Vec::<String>::new());
     }
 
     #[test]

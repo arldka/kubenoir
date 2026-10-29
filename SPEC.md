@@ -93,7 +93,7 @@ T35|.|engine: `vim`\|`vi` FILE command (parse, path rules, queue editor request)
 T36|.|`frontend/src/lib/terminal/vim.ts`: modal editor state machine, vitest-covered (incl. failed-exit counter): normal/insert/ex modes; h j k l w b e 0 $ gg G; i a I A o O; x dd yy p P u Ctrl-R; counts; `:w :q :wq :x :q!`; Tab→spaces, auto-indent|V24,V25,V26,V27,V29,I.ui
 T37|.|terminal integration: full-screen render (alt screen, mode/`[+]` status line, `~` rows), key routing in `session.ts`, `:w` → `Engine.writeFile`, back to prompt on quit; e2e: edit a manifest then `kubectl apply -f` it; fail to quit 3× → scolded, then `:q!` leaves|V24,V25,V29,I.js
 T38|x|`kubectl edit` → boss's reprimand (parse error variant printed as is, stderr in pipelines)|C12,V28
-T13|.|verbs: `run`, `create namespace\|deployment\|configmap\|secret`, `set image`, `scale`, `rollout status\|history\|undo`, `label`, `expose`|I.cmd
+T13|x|verbs: `run`, `create namespace\|deployment\|configmap\|secret`, `set image`, `scale`, `rollout status\|history\|undo`, `label`, `expose`|I.cmd
 T14|.|Namespace kind + cluster-scoped resources + `namespaces "x" not found`|V1
 T15|.|env `valueFrom`/`envFrom` from ConfigMap/Secret at start|V12,V15
 T16|.|image catalog + `imagePullSecrets` → ErrImagePull/ImagePullBackOff|V16,I.scenario

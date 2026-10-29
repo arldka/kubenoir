@@ -215,6 +215,124 @@ pub enum Command {
     /// `kubectl --help` (topic `""`) or `kubectl COMMAND --help` (see `help`).
     Help(String),
     Explain(ExplainArgs),
+    Run(RunArgs),
+    CreateObject(CreateArgs),
+    SetImage(SetImageArgs),
+    Scale(ScaleArgs),
+    Rollout(RolloutArgs),
+    Label(LabelArgs),
+    Expose(ExposeArgs),
+}
+
+/// `run NAME --image=IMAGE ...`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunArgs {
+    pub name: String,
+    pub image: String,
+    pub namespace: Option<String>,
+    pub env: Vec<(String, String)>,
+    pub port: Option<i32>,
+    /// `--labels`; when empty the pod gets `run=NAME`.
+    pub labels: Vec<(String, String)>,
+    pub restart: Option<String>,
+    /// Words after `--`: the container's arguments, or its command with `--command`.
+    pub trailing: Vec<String>,
+    pub command: bool,
+}
+
+/// What `kubectl create KIND NAME` makes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateObject {
+    Namespace,
+    Deployment {
+        image: String,
+        replicas: i32,
+        port: Option<i32>,
+    },
+    ConfigMap {
+        literals: Vec<(String, String)>,
+        files: Vec<(Option<String>, String)>,
+    },
+    Secret {
+        literals: Vec<(String, String)>,
+        files: Vec<(Option<String>, String)>,
+        secret_type: Option<String>,
+    },
+    DockerRegistrySecret {
+        server: String,
+        username: String,
+        password: String,
+        email: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateArgs {
+    pub name: String,
+    pub namespace: Option<String>,
+    pub object: CreateObject,
+}
+
+/// `set image TYPE/NAME CONTAINER=IMAGE...`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetImageArgs {
+    pub kind: &'static str,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub images: Vec<(String, String)>,
+}
+
+/// `scale TYPE/NAME... --replicas=N`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScaleArgs {
+    pub kind: &'static str,
+    pub names: Vec<String>,
+    pub namespace: Option<String>,
+    pub replicas: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RolloutAction {
+    Status,
+    History,
+    Undo { to_revision: Option<i64> },
+}
+
+/// `rollout status|history|undo deployment/NAME`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolloutArgs {
+    pub action: RolloutAction,
+    pub name: String,
+    pub namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelChange {
+    Set(String, String),
+    Remove(String),
+}
+
+/// `label TYPE NAME... KEY=VALUE... KEY-`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelArgs {
+    pub kind: &'static str,
+    pub names: Vec<String>,
+    pub namespace: Option<String>,
+    pub changes: Vec<LabelChange>,
+    pub overwrite: bool,
+}
+
+/// `expose TYPE/NAME [--port ...]`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExposeArgs {
+    pub kind: &'static str,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub port: Option<i32>,
+    pub target_port: Option<String>,
+    pub service_name: Option<String>,
+    pub service_type: Option<String>,
+    pub protocol: Option<String>,
 }
 
 /// `explain RESOURCE[.FIELD...]`
@@ -269,6 +387,8 @@ pub enum ParseError {
     InvalidPatchType(String),
     /// `--force` outside `replace`.
     ForceWithoutReplace,
+    /// A required flag was not given (`error: required flag(s) "image" not set`).
+    MissingFlag(&'static str),
     /// The boss's answer to something this precinct does not do; printed as is.
     Boss(&'static str),
     /// A failure of a built-in shell command, already worded (`ls: invalid option -- 'l'`).
@@ -342,6 +462,7 @@ impl fmt::Display for ParseError {
             ),
             ParseError::Builtin(message) => write!(f, "{message}"),
             ParseError::Boss(message) => write!(f, "{message}"),
+            ParseError::MissingFlag(flag) => write!(f, "error: required flag(s) \"{flag}\" not set"),
             ParseError::ForceWithoutReplace => write!(f, "error: unknown flag: --force"),
         }
     }
@@ -455,19 +576,27 @@ pub fn parse_words(words: &[String]) -> Result<Command, ParseError> {
         "replace" => parse_manifest_args(&rest, true).map(Command::Replace),
         "patch" => parse_patch(&rest).map(Command::Patch),
         "explain" => parse_explain(&rest).map(Command::Explain),
-        "create" => match rest.first() {
-            Some(sub) if !is_flag(sub) => Err(ParseError::Unsupported(format!(
-                "kubectl create {sub} (create objects from a file with kubectl create -f or kubectl apply -f)"
-            ))),
+        "run" => parse_run(&rest).map(Command::Run),
+        "scale" => parse_scale(&rest).map(Command::Scale),
+        "label" => parse_label(&rest).map(Command::Label),
+        "expose" => parse_expose(&rest).map(Command::Expose),
+        "create" => match rest.split_first() {
+            Some((sub, args)) if !is_flag(sub) => parse_create_object(sub, args),
             _ => parse_manifest_args(&rest, false).map(Command::Create),
         },
         "set" => match rest.split_first() {
             Some((&"env", args)) => parse_set_env(args).map(Command::SetEnv),
+            Some((&"image", args)) => parse_set_image(args).map(Command::SetImage),
             Some((other, _)) => Err(unknown_subcommand("set", other, SET_UNSUPPORTED)),
             None => Err(ParseError::MissingSubcommand("set")),
         },
         "rollout" => match rest.split_first() {
             Some((&"restart", args)) => parse_rollout_restart(args).map(Command::RolloutRestart),
+            Some((&"status", args)) => parse_rollout(RolloutAction::Status, args).map(Command::Rollout),
+            Some((&"history", args)) => parse_rollout(RolloutAction::History, args).map(Command::Rollout),
+            Some((&"undo", args)) => {
+                parse_rollout(RolloutAction::Undo { to_revision: None }, args).map(Command::Rollout)
+            }
             Some((other, _)) => Err(unknown_subcommand("rollout", other, ROLLOUT_UNSUPPORTED)),
             None => Err(ParseError::MissingSubcommand("rollout")),
         },
@@ -495,23 +624,35 @@ const UNSUPPORTED_VERBS: &[&str] = &[
     "drain",
     "events",
     "exec",
-    "expose",
     "kustomize",
-    "label",
     "options",
     "plugin",
     "port-forward",
     "proxy",
-    "run",
-    "scale",
     "taint",
     "top",
     "uncordon",
     "version",
     "wait",
 ];
-const SET_UNSUPPORTED: &[&str] = &["image", "resources", "selector", "serviceaccount", "subject"];
-const ROLLOUT_UNSUPPORTED: &[&str] = &["history", "pause", "resume", "status", "undo"];
+const SET_UNSUPPORTED: &[&str] = &["resources", "selector", "serviceaccount", "subject"];
+const ROLLOUT_UNSUPPORTED: &[&str] = &["pause", "resume"];
+/// `kubectl create SUBCOMMAND`s that exist but are not offered.
+const CREATE_UNSUPPORTED: &[&str] = &[
+    "clusterrole",
+    "clusterrolebinding",
+    "cronjob",
+    "ingress",
+    "job",
+    "poddisruptionbudget",
+    "priorityclass",
+    "quota",
+    "role",
+    "rolebinding",
+    "service",
+    "serviceaccount",
+    "token",
+];
 
 /// What the boss says to anyone who reaches for `kubectl edit`: state is changed by writing a
 /// manifest and applying it.
@@ -539,6 +680,427 @@ fn unknown_subcommand(parent: &'static str, name: &str, unsupported: &[&str]) ->
     }
 }
 
+// ---- imperative commands ----------------------------------------------------------------------
+
+fn parse_i32(flag: &'static str, value: &str) -> Result<i32, ParseError> {
+    value.parse().map_err(|_| ParseError::InvalidInt {
+        flag,
+        value: value.to_string(),
+    })
+}
+
+/// `KEY=VALUE` as `(key, value)`.
+fn key_value(spec: &str, what: &str) -> Result<(String, String), ParseError> {
+    match spec.split_once('=') {
+        Some((key, value)) if !key.is_empty() => Ok((key.to_string(), value.to_string())),
+        _ => Err(ParseError::Builtin(format!("error: invalid {what}: {spec}"))),
+    }
+}
+
+/// `[KEY=]PATH` for `--from-file`.
+fn file_source(spec: &str) -> (Option<String>, String) {
+    match spec.split_once('=') {
+        Some((key, path)) => (Some(key.to_string()), path.to_string()),
+        None => (None, spec.to_string()),
+    }
+}
+
+/// What `scan_args` found: positionals, words after `--`, and the `-n` namespace.
+type Scanned<'a> = (Vec<&'a str>, Vec<&'a str>, Option<String>);
+
+/// Flags every one of these commands takes: pulls `-n` out, and hands anything else to `other`
+/// (which returns whether it used the argument). Positionals are returned in order, with
+/// everything after a `--` kept apart.
+fn scan_args<'a>(
+    args: &[&'a str],
+    mut other: impl FnMut(&'a str, &mut std::slice::Iter<'_, &'a str>) -> Result<bool, ParseError>,
+) -> Result<Scanned<'a>, ParseError> {
+    let (mut positional, mut trailing, mut namespace) = (Vec::new(), Vec::new(), None);
+    let mut iter = args.iter();
+    while let Some(&arg) = iter.next() {
+        if arg == "--" {
+            trailing.extend(iter.by_ref().copied());
+        } else if let Some(ns) = take_namespace(arg, &mut iter.by_ref().copied())? {
+            namespace = Some(ns);
+        } else if other(arg, &mut iter)? {
+        } else if is_flag(arg) {
+            return Err(unknown_flag(arg));
+        } else {
+            positional.push(arg);
+        }
+    }
+    Ok((positional, trailing, namespace))
+}
+
+/// The value of `--flag=value` or `--flag value`, if `arg` is that flag.
+fn long_value(
+    arg: &str,
+    flag: &'static str,
+    iter: &mut std::slice::Iter<'_, &str>,
+) -> Result<Option<String>, ParseError> {
+    take_long(arg, flag, &mut iter.by_ref().copied())
+}
+
+fn parse_run(args: &[&str]) -> Result<RunArgs, ParseError> {
+    let (mut image, mut port, mut restart) = (None, None, None);
+    let (mut env, mut labels) = (Vec::new(), Vec::new());
+    let mut command = false;
+    let (positional, trailing, namespace) = scan_args(args, |arg, iter| {
+        if let Some(v) = long_value(arg, "--image", iter)? {
+            image = Some(v);
+        } else if let Some(v) = long_value(arg, "--env", iter)? {
+            env.push(key_value(&v, "environment variable")?);
+        } else if let Some(v) = long_value(arg, "--port", iter)? {
+            port = Some(parse_i32("--port", &v)?);
+        } else if let Some(v) = long_value(arg, "--labels", iter)? {
+            for pair in v.split(',').filter(|p| !p.is_empty()) {
+                labels.push(key_value(pair, "label")?);
+            }
+        } else if let Some(v) = long_value(arg, "--restart", iter)? {
+            restart = Some(v);
+        } else if arg == "--command" {
+            command = true;
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    })?;
+    let name = match positional.as_slice() {
+        [] => return Err(ParseError::Builtin("error: NAME is required for run".into())),
+        [name] => name.to_string(),
+        [_, extra @ ..] => {
+            return Err(ParseError::UnexpectedArgs(
+                extra.iter().map(|a| a.to_string()).collect(),
+            ))
+        }
+    };
+    let image = image.ok_or(ParseError::MissingFlag("image"))?;
+    if let Some(policy) = restart.as_deref() {
+        if !["Always", "OnFailure", "Never"].contains(&policy) {
+            return Err(ParseError::Builtin(format!(
+                "error: invalid restart policy: {policy} (one of Always, OnFailure, Never)"
+            )));
+        }
+    }
+    Ok(RunArgs {
+        name,
+        image,
+        namespace,
+        env,
+        port,
+        labels,
+        restart,
+        trailing: trailing.iter().map(|w| w.to_string()).collect(),
+        command,
+    })
+}
+
+fn parse_create_object(sub: &str, args: &[&str]) -> Result<Command, ParseError> {
+    let (mut image, mut replicas, mut port, mut secret_type) = (None, 1, None, None);
+    let (mut literals, mut files) = (Vec::new(), Vec::new());
+    let (mut server, mut username, mut password, mut email) = (None, None, None, None);
+    let (kind, rest) = match sub {
+        "namespace" | "ns" => ("namespace", args),
+        "deployment" | "deploy" => ("deployment", args),
+        "configmap" | "cm" => ("configmap", args),
+        "secret" => match args.split_first() {
+            Some((&"generic", rest)) => ("secret generic", rest),
+            Some((&"docker-registry", rest)) => ("secret docker-registry", rest),
+            Some((&"tls", _)) => return Err(ParseError::Unsupported("kubectl create secret tls".into())),
+            Some((other, _)) if !is_flag(other) => {
+                return Err(ParseError::UnknownSubcommand {
+                    parent: "create secret",
+                    name: other.to_string(),
+                })
+            }
+            _ => return Err(ParseError::MissingSubcommand("create secret")),
+        },
+        other if CREATE_UNSUPPORTED.contains(&other) => {
+            return Err(ParseError::Unsupported(format!("kubectl create {other}")))
+        }
+        other => {
+            return Err(ParseError::UnknownSubcommand {
+                parent: "create",
+                name: other.to_string(),
+            })
+        }
+    };
+    let (positional, _, namespace) = scan_args(rest, |arg, iter| {
+        if let Some(v) = long_value(arg, "--image", iter)? {
+            image = Some(v);
+        } else if let Some(v) = long_value(arg, "--replicas", iter)? {
+            replicas = parse_i32("--replicas", &v)?;
+        } else if let Some(v) = long_value(arg, "--port", iter)? {
+            port = Some(parse_i32("--port", &v)?);
+        } else if let Some(v) = long_value(arg, "--from-literal", iter)? {
+            literals.push(key_value(&v, "literal")?);
+        } else if let Some(v) = long_value(arg, "--from-file", iter)? {
+            files.push(file_source(&v));
+        } else if let Some(v) = long_value(arg, "--type", iter)? {
+            secret_type = Some(v);
+        } else if let Some(v) = long_value(arg, "--docker-server", iter)? {
+            server = Some(v);
+        } else if let Some(v) = long_value(arg, "--docker-username", iter)? {
+            username = Some(v);
+        } else if let Some(v) = long_value(arg, "--docker-password", iter)? {
+            password = Some(v);
+        } else if let Some(v) = long_value(arg, "--docker-email", iter)? {
+            email = Some(v);
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    })?;
+    // Flags that belong to another kind of object are refused rather than ignored.
+    let allowed: &[&str] = match kind {
+        "deployment" => &["image", "replicas", "port"],
+        "configmap" => &["from-literal", "from-file"],
+        "secret generic" => &["from-literal", "from-file", "type"],
+        "secret docker-registry" => &["docker-server", "docker-username", "docker-password", "docker-email"],
+        _ => &[],
+    };
+    let given = [
+        ("image", image.is_some()),
+        ("replicas", replicas != 1),
+        ("port", port.is_some()),
+        ("from-literal", !literals.is_empty()),
+        ("from-file", !files.is_empty()),
+        ("type", secret_type.is_some()),
+        ("docker-server", server.is_some()),
+        ("docker-username", username.is_some()),
+        ("docker-password", password.is_some()),
+        ("docker-email", email.is_some()),
+    ];
+    if let Some((flag, _)) = given.iter().find(|(flag, set)| *set && !allowed.contains(flag)) {
+        return Err(ParseError::UnknownFlag(format!("--{flag}")));
+    }
+    let name = match positional.as_slice() {
+        [] => {
+            return Err(ParseError::Builtin(
+                "error: exactly NAME is required, got 0".to_string(),
+            ))
+        }
+        [name] => name.to_string(),
+        many => {
+            return Err(ParseError::Builtin(format!(
+                "error: exactly NAME is required, got {}",
+                many.len()
+            )))
+        }
+    };
+    let object = match kind {
+        "namespace" => CreateObject::Namespace,
+        "deployment" => CreateObject::Deployment {
+            image: image.ok_or(ParseError::MissingFlag("image"))?,
+            replicas,
+            port,
+        },
+        "configmap" => CreateObject::ConfigMap { literals, files },
+        "secret generic" => CreateObject::Secret {
+            literals,
+            files,
+            secret_type,
+        },
+        _ => CreateObject::DockerRegistrySecret {
+            server: server.unwrap_or_else(|| "https://index.docker.io/v1/".into()),
+            username: username.ok_or(ParseError::MissingFlag("docker-username"))?,
+            password: password.ok_or(ParseError::MissingFlag("docker-password"))?,
+            email,
+        },
+    };
+    Ok(Command::CreateObject(CreateArgs {
+        name,
+        namespace,
+        object,
+    }))
+}
+
+/// `TYPE NAME...` or `TYPE/NAME...` through the registry, limited to the kinds a command handles.
+fn target(verb: &str, positional: &[&str], allowed: &[&str]) -> Result<(&'static str, Vec<String>), ParseError> {
+    let mut kinds = KindArgs::default();
+    for arg in positional {
+        kinds.push(arg)?;
+    }
+    let (kind, names) = kinds.finish("act on")?;
+    if !allowed.contains(&kind) {
+        let plural = crate::api::info(kind).map_or_else(|| kind.to_string(), |i| i.resource());
+        return Err(ParseError::Unsupported(format!("kubectl {verb} for {plural}")));
+    }
+    Ok((kind, names))
+}
+
+fn parse_set_image(args: &[&str]) -> Result<SetImageArgs, ParseError> {
+    let (positional, _, namespace) = scan_args(args, |_, _| Ok(false))?;
+    let (specs, resource): (Vec<&str>, Vec<&str>) = positional.iter().partition(|a| a.contains('='));
+    let (kind, names) = target("set image", &resource, &["Deployment", "ReplicaSet", "Pod"])?;
+    let name = match names.as_slice() {
+        [] => return Err(ParseError::MissingName),
+        [name] => name.clone(),
+        [_, extra @ ..] => return Err(ParseError::UnexpectedArgs(extra.to_vec())),
+    };
+    if specs.is_empty() {
+        return Err(ParseError::Builtin(
+            "error: at least one image update is required".into(),
+        ));
+    }
+    let images = specs
+        .iter()
+        .map(|s| key_value(s, "image spec"))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(SetImageArgs {
+        kind,
+        name,
+        namespace,
+        images,
+    })
+}
+
+fn parse_scale(args: &[&str]) -> Result<ScaleArgs, ParseError> {
+    let mut replicas = None;
+    let (positional, _, namespace) = scan_args(args, |arg, iter| {
+        match long_value(arg, "--replicas", iter)? {
+            Some(v) => replicas = Some(parse_i32("--replicas", &v)?),
+            None => return Ok(false),
+        }
+        Ok(true)
+    })?;
+    let (kind, names) = target("scale", &positional, &["Deployment", "ReplicaSet"])?;
+    if names.is_empty() {
+        return Err(ParseError::MissingName);
+    }
+    Ok(ScaleArgs {
+        kind,
+        names,
+        namespace,
+        replicas: replicas.ok_or(ParseError::MissingFlag("replicas"))?,
+    })
+}
+
+fn parse_rollout(action: RolloutAction, args: &[&str]) -> Result<RolloutArgs, ParseError> {
+    let mut to_revision = None;
+    let undo = matches!(action, RolloutAction::Undo { .. });
+    let (positional, _, namespace) = scan_args(args, |arg, iter| {
+        if undo {
+            if let Some(v) = long_value(arg, "--to-revision", iter)? {
+                to_revision = Some(v.parse::<i64>().map_err(|_| ParseError::InvalidInt {
+                    flag: "--to-revision",
+                    value: v.clone(),
+                })?);
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })?;
+    let verb = match action {
+        RolloutAction::Status => "rollout status",
+        RolloutAction::History => "rollout history",
+        RolloutAction::Undo { .. } => "rollout undo",
+    };
+    let (_, names) = target(verb, &positional, &["Deployment"])?;
+    let name = match names.as_slice() {
+        [] => return Err(ParseError::MissingName),
+        [name] => name.clone(),
+        [_, extra @ ..] => return Err(ParseError::UnexpectedArgs(extra.to_vec())),
+    };
+    let action = match action {
+        RolloutAction::Undo { .. } => RolloutAction::Undo { to_revision },
+        other => other,
+    };
+    Ok(RolloutArgs {
+        action,
+        name,
+        namespace,
+    })
+}
+
+fn parse_label(args: &[&str]) -> Result<LabelArgs, ParseError> {
+    let mut overwrite = false;
+    let (positional, _, namespace) = scan_args(args, |arg, _| {
+        if arg == "--overwrite" {
+            overwrite = true;
+            return Ok(true);
+        }
+        // `foo-` removes a label; a bare `-` or `--x` is a flag-like word handled by the caller.
+        Ok(false)
+    })?;
+    let (specs, resource): (Vec<&str>, Vec<&str>) = positional
+        .iter()
+        .partition(|a| a.contains('=') || (a.ends_with('-') && a.len() > 1));
+    let (kind, names) = target(
+        "label",
+        &resource,
+        &crate::api::kinds().iter().map(|k| k.kind).collect::<Vec<_>>(),
+    )?;
+    if names.is_empty() {
+        return Err(ParseError::MissingName);
+    }
+    if specs.is_empty() {
+        return Err(ParseError::Builtin(
+            "error: at least one label update is required".into(),
+        ));
+    }
+    let mut changes = Vec::new();
+    for spec in specs {
+        changes.push(match spec.strip_suffix('-').filter(|_| !spec.contains('=')) {
+            Some(key) => LabelChange::Remove(key.to_string()),
+            None => {
+                let (key, value) = key_value(spec, "label spec")?;
+                LabelChange::Set(key, value)
+            }
+        });
+    }
+    Ok(LabelArgs {
+        kind,
+        names,
+        namespace,
+        changes,
+        overwrite,
+    })
+}
+
+fn parse_expose(args: &[&str]) -> Result<ExposeArgs, ParseError> {
+    let (mut port, mut target_port, mut service_name, mut service_type, mut protocol) = (None, None, None, None, None);
+    let (positional, _, namespace) = scan_args(args, |arg, iter| {
+        if let Some(v) = long_value(arg, "--port", iter)? {
+            port = Some(parse_i32("--port", &v)?);
+        } else if let Some(v) = long_value(arg, "--target-port", iter)? {
+            target_port = Some(v);
+        } else if let Some(v) = long_value(arg, "--name", iter)? {
+            service_name = Some(v);
+        } else if let Some(v) = long_value(arg, "--type", iter)? {
+            service_type = Some(v);
+        } else if let Some(v) = long_value(arg, "--protocol", iter)? {
+            protocol = Some(v);
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    })?;
+    let (kind, names) = target("expose", &positional, &["Pod", "Deployment", "ReplicaSet", "Service"])?;
+    let name = match names.as_slice() {
+        [] => return Err(ParseError::MissingName),
+        [name] => name.clone(),
+        [_, extra @ ..] => return Err(ParseError::UnexpectedArgs(extra.to_vec())),
+    };
+    if let Some(t) = service_type.as_deref() {
+        if !["ClusterIP", "NodePort", "LoadBalancer"].contains(&t) {
+            return Err(ParseError::Builtin(format!(
+                "error: unknown service type {t:?} (one of ClusterIP, NodePort, LoadBalancer)"
+            )));
+        }
+    }
+    Ok(ExposeArgs {
+        kind,
+        name,
+        namespace,
+        port,
+        target_port,
+        service_name,
+        service_type,
+        protocol,
+    })
+}
+
 /// `kubectl help [COMMAND...]`
 fn parse_help_topic(args: &[&str]) -> Result<Command, ParseError> {
     let topic = args.join(" ");
@@ -549,15 +1111,31 @@ fn parse_help_topic(args: &[&str]) -> Result<Command, ParseError> {
     }
 }
 
-/// `kubectl VERB ... --help`: the page of the command being asked about.
+/// `kubectl VERB ... --help`: the page of the command being asked about, found by taking as many
+/// of the leading words as name a page (`create secret generic`).
 fn help_for(verb: &str, rest: &[&str]) -> Result<Command, ParseError> {
-    let topic = match (verb, rest.first().copied()) {
-        ("set", Some("env")) => "set env".to_string(),
-        ("rollout", Some("restart")) => "rollout restart".to_string(),
-        (verb, _) if crate::help::is_topic(verb) => verb.to_string(),
-        (verb, _) => return Err(unknown_verb(verb)),
-    };
-    Ok(Command::Help(topic))
+    fn alias(word: &str) -> &str {
+        match word {
+            "ns" => "namespace",
+            "deploy" => "deployment",
+            "cm" => "configmap",
+            other => other,
+        }
+    }
+    let mut words = vec![verb.to_string()];
+    words.extend(
+        rest.iter()
+            .filter(|a| !is_flag(a))
+            .take(2)
+            .map(|w| alias(w).to_string()),
+    );
+    for n in (1..=words.len()).rev() {
+        let topic = words[..n].join(" ");
+        if crate::help::is_topic(&topic) {
+            return Ok(Command::Help(topic));
+        }
+    }
+    Err(unknown_verb(verb))
 }
 
 fn parse_explain(args: &[&str]) -> Result<ExplainArgs, ParseError> {
@@ -1645,8 +2223,8 @@ mod tests {
             Err(ParseError::InvalidEnvSpec("junk".into()))
         );
         assert_eq!(
-            parse("kubectl set image deploy/api x=y"),
-            Err(ParseError::Unsupported("kubectl set image".into()))
+            parse("kubectl set selector deploy/api x=y"),
+            Err(ParseError::Unsupported("kubectl set selector".into()))
         );
         assert_eq!(parse("kubectl set"), Err(ParseError::MissingSubcommand("set")));
         assert_eq!(
@@ -1671,8 +2249,8 @@ mod tests {
         );
         assert_eq!(parse("kubectl rollout restart deploy"), Err(ParseError::MissingName));
         assert_eq!(
-            parse("kubectl rollout status deploy/api"),
-            Err(ParseError::Unsupported("kubectl rollout status".into()))
+            parse("kubectl rollout pause deploy/api"),
+            Err(ParseError::Unsupported("kubectl rollout pause".into()))
         );
         assert_eq!(parse("kubectl rollout"), Err(ParseError::MissingSubcommand("rollout")));
 

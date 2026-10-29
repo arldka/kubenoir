@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api;
-use crate::parser::{Command, ResourceKind};
+use crate::parser::{Command, CreateObject, ResourceKind, RolloutAction};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
-const VERBS: [&str; 13] = [
+const VERBS: &[&str] = &[
     "get",
     "describe",
     "logs",
@@ -34,6 +34,14 @@ const VERBS: [&str; 13] = [
     "cat",
     "ls",
     "explain",
+    "run",
+    "scale",
+    "label",
+    "expose",
+    "set-image",
+    "rollout-status",
+    "rollout-history",
+    "rollout-undo",
 ];
 const DEFAULT_STABLE_SECS: i64 = 15;
 
@@ -465,6 +473,34 @@ fn matches_command(matcher: &CommandMatcher, command: &Command, touched: &[Touch
         | ("create", Command::Create(_))
         | ("replace", Command::Replace(_))
         | ("patch", Command::Patch(_)) => touched_one(),
+        // Imperative commands name the object they act on (the kind is the resource).
+        ("run", Command::Run(a)) => kind.is_none_or(|k| k == "Pod") && named(&[a.name.as_str()]),
+        ("create", Command::CreateObject(a)) => {
+            let created = match a.object {
+                CreateObject::Namespace => "Namespace",
+                CreateObject::Deployment { .. } => "Deployment",
+                CreateObject::ConfigMap { .. } => "ConfigMap",
+                CreateObject::Secret { .. } | CreateObject::DockerRegistrySecret { .. } => "Secret",
+            };
+            kind.is_none_or(|k| k == created) && named(&[a.name.as_str()])
+        }
+        ("scale", Command::Scale(a)) => {
+            kind.is_none_or(|k| k == a.kind) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
+        }
+        ("label", Command::Label(a)) => {
+            kind.is_none_or(|k| k == a.kind) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
+        }
+        ("expose", Command::Expose(a)) => kind.is_none_or(|k| k == a.kind) && named(&[a.name.as_str()]),
+        ("set-image", Command::SetImage(a)) => kind.is_none_or(|k| k == a.kind) && named(&[a.name.as_str()]),
+        ("rollout-status", Command::Rollout(a)) if a.action == RolloutAction::Status => {
+            kind.is_none_or(|k| k == "Deployment") && named(&[a.name.as_str()])
+        }
+        ("rollout-history", Command::Rollout(a)) if a.action == RolloutAction::History => {
+            kind.is_none_or(|k| k == "Deployment") && named(&[a.name.as_str()])
+        }
+        ("rollout-undo", Command::Rollout(a)) if matches!(a.action, RolloutAction::Undo { .. }) => {
+            kind.is_none_or(|k| k == "Deployment") && named(&[a.name.as_str()])
+        }
         // `name` is the dotted path (`pod.spec.containers`) for `explain`.
         ("explain", Command::Explain(a)) => matcher.resource.is_none() && named(&[a.path.as_str()]),
         // `name` is a file path for the shell built-ins; they have no resource type.

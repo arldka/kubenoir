@@ -180,8 +180,8 @@ pub const VERBS: &[Verb] = &[
     Verb {
         name: "create",
         summary: "Create a resource from a file",
-        description: "Create a resource from a file. It fails if the object already exists.",
-        usage: "kubectl create -f FILENAME [options]",
+        description: "Create a resource from a file, or a simple object from flags with a subcommand. It fails if the object already exists.",
+        usage: "kubectl create -f FILENAME | kubectl create SUBCOMMAND [options]",
         examples: &[("Create the objects in web.yaml", "kubectl create -f web.yaml")],
         flags: &[FILENAME, NAMESPACE],
         sample: "-f a.yaml",
@@ -220,6 +220,193 @@ pub const VERBS: &[Verb] = &[
         sample: "pod x -p {}",
     },
     Verb {
+        name: "run",
+        summary: "Run a particular image on the cluster",
+        description: "Create and run a particular image in a pod.",
+        usage: "kubectl run NAME --image=image [--env=\"key=value\"] [--port=port] [-- [COMMAND] [args...]]",
+        examples: &[
+            ("Start a nginx pod", "kubectl run nginx --image=nginx"),
+            ("Start a pod with environment variables and a port", "kubectl run informant --image=informant:1.0 --env=TIP_SOURCE=docks --port=8080"),
+            ("Start a pod that runs a command once", "kubectl run job-like --image=busybox --restart=Never --command -- sleep 3600"),
+        ],
+        flags: &[
+            flag(None, "--command", "false", false, "If true and extra arguments are present, use them as the 'command' field in the container, rather than the 'args' field"),
+            flag(None, "--env", "[]", true, "Environment variables to set in the container"),
+            flag(None, "--image", "''", true, "The image for the container to run"),
+            flag(None, "--labels", "''", true, "Comma separated labels to apply to the pod. Will override previous values"),
+            NAMESPACE,
+            flag(None, "--port", "''", true, "The port that this container exposes"),
+            flag(None, "--restart", "'Always'", true, "The restart policy for this Pod. Legal values [Always, OnFailure, Never]"),
+        ],
+        sample: "x --image=y",
+    },
+    Verb {
+        name: "create namespace",
+        summary: "Create a namespace with the specified name",
+        description: "Create a namespace. Objects live in a namespace; most commands take -n NAMESPACE.",
+        usage: "kubectl create namespace NAME [options]",
+        examples: &[("Create a new namespace named my-namespace", "kubectl create namespace my-namespace")],
+        flags: &[],
+        sample: "x",
+    },
+    Verb {
+        name: "create deployment",
+        summary: "Create a deployment with the specified name",
+        description: "Create a deployment whose pods carry the label app=NAME.",
+        usage: "kubectl create deployment NAME --image=image [--replicas=N] [--port=port] [options]",
+        examples: &[
+            ("Create a deployment named my-dep that runs the nginx image", "kubectl create deployment my-dep --image=nginx"),
+            ("Create a deployment with 3 replicas", "kubectl create deployment my-dep --image=nginx --replicas=3"),
+        ],
+        flags: &[
+            flag(None, "--image", "[]", true, "Image names to run"),
+            flag(None, "--port", "-1", true, "The containerPort that this deployment exposes"),
+            flag(None, "--replicas", "1", true, "Number of replicas to create"),
+            NAMESPACE,
+        ],
+        sample: "x --image=y",
+    },
+    Verb {
+        name: "create configmap",
+        summary: "Create a config map from literal values or files",
+        description: "Create a config map. Each --from-literal KEY=VALUE or --from-file [KEY=]PATH adds one key.",
+        usage: "kubectl create configmap NAME [--from-file=[key=]source] [--from-literal=key1=value1] [options]",
+        examples: &[
+            ("Create a config map from literals", "kubectl create configmap my-config --from-literal=key1=config1 --from-literal=key2=config2"),
+            ("Create a config map from a file of the terminal", "kubectl create configmap my-config --from-file=path/to/bar"),
+        ],
+        flags: &[
+            flag(None, "--from-file", "[]", true, "Key file can be specified using its file path, in which case file basename will be used as config map key, or optionally with a key and file path"),
+            flag(None, "--from-literal", "[]", true, "Specify a key and literal value to insert in config map (i.e. mykey=somevalue)"),
+            NAMESPACE,
+        ],
+        sample: "x",
+    },
+    Verb {
+        name: "create secret generic",
+        summary: "Create a secret from a local file or literal values",
+        description: "Create a secret. Values are stored base64 encoded, exactly as given (a file's trailing newline included).",
+        usage: "kubectl create secret generic NAME [--type=string] [--from-file=[key=]source] [--from-literal=key1=value1] [options]",
+        examples: &[
+            ("Create a new secret named my-secret with keys for each file in a directory", "kubectl create secret generic my-secret --from-file=path/to/bar"),
+            ("Create a secret from literals", "kubectl create secret generic db --from-literal=password=s3cret"),
+        ],
+        flags: &[
+            flag(None, "--from-file", "[]", true, "Key files can be specified using their file path, in which case a default name will be given to them, or optionally with a name and file path"),
+            flag(None, "--from-literal", "[]", true, "Specify a key and literal value to insert in secret (i.e. mykey=somevalue)"),
+            NAMESPACE,
+            flag(None, "--type", "''", true, "The type of secret to create"),
+        ],
+        sample: "x",
+    },
+    Verb {
+        name: "create secret docker-registry",
+        summary: "Create a secret for use with a Docker registry",
+        description: "Create a secret of type kubernetes.io/dockerconfigjson, for a pod's imagePullSecrets.",
+        usage: "kubectl create secret docker-registry NAME --docker-username=user --docker-password=password [--docker-server=string] [options]",
+        examples: &[(
+            "Create a new secret named my-secret",
+            "kubectl create secret docker-registry my-secret --docker-server=registry.example.com --docker-username=user --docker-password=pass",
+        )],
+        flags: &[
+            flag(None, "--docker-email", "''", true, "Email for Docker registry"),
+            flag(None, "--docker-password", "''", true, "Password for Docker registry authentication"),
+            flag(None, "--docker-server", "'https://index.docker.io/v1/'", true, "Server location for Docker registry"),
+            flag(None, "--docker-username", "''", true, "Username for Docker registry authentication"),
+            NAMESPACE,
+        ],
+        sample: "x --docker-username=u --docker-password=p",
+    },
+    Verb {
+        name: "set image",
+        summary: "Update the image of a pod template",
+        description: "Update existing container image(s) of deployments, replica sets and pods. A deployment starts a rollout when its template changes.",
+        usage: "kubectl set image (TYPE NAME | TYPE/NAME) CONTAINER_NAME_1=CONTAINER_IMAGE_1 ... CONTAINER_NAME_N=CONTAINER_IMAGE_N [options]",
+        examples: &[
+            ("Set a deployment's nginx container image to 'nginx:1.28'", "kubectl set image deployment/web nginx=nginx:1.28"),
+            ("Update all containers in a deployment", "kubectl set image deployment/web *=nginx:1.28"),
+        ],
+        flags: &[NAMESPACE],
+        sample: "deployment/x c=y",
+    },
+    Verb {
+        name: "scale",
+        summary: "Set a new size for a deployment or replica set",
+        description: "Set a new size for a deployment or a replica set.",
+        usage: "kubectl scale (TYPE NAME | TYPE/NAME) --replicas=COUNT [options]",
+        examples: &[
+            ("Scale a deployment to 3", "kubectl scale deployment/web --replicas=3"),
+            ("Scale it down to nothing", "kubectl scale deployment web --replicas=0"),
+        ],
+        flags: &[NAMESPACE, flag(None, "--replicas", "-1", true, "The new desired number of replicas. Required.")],
+        sample: "deployment/x --replicas=2",
+    },
+    Verb {
+        name: "label",
+        summary: "Update the labels on a resource",
+        description: "Update the labels on a resource. A label KEY=VALUE adds or changes one; KEY- removes it.",
+        usage: "kubectl label (TYPE NAME | TYPE/NAME) KEY_1=VAL_1 ... KEY_N=VAL_N [options]",
+        examples: &[
+            ("Update pod 'foo' with the label 'unhealthy' and the value 'true'", "kubectl label pods foo unhealthy=true"),
+            ("Update the label, overwriting an existing value", "kubectl label --overwrite pods foo status=unhealthy"),
+            ("Remove a label", "kubectl label pods foo unhealthy-"),
+        ],
+        flags: &[
+            NAMESPACE,
+            flag(None, "--overwrite", "false", false, "If true, allow labels to be overwritten, otherwise reject label updates that overwrite existing labels"),
+        ],
+        sample: "pod x a=b",
+    },
+    Verb {
+        name: "expose",
+        summary: "Expose a resource as a new Kubernetes service",
+        description: "Expose a pod, deployment, replica set or service as a new service. The service selects the pods the resource selects.",
+        usage: "kubectl expose (TYPE NAME | TYPE/NAME) [--port=port] [--target-port=target-port] [--name=name] [--type=type] [options]",
+        examples: &[
+            ("Create a service for a deployment, serving on port 80", "kubectl expose deployment web --port=80"),
+            ("Expose a pod's port 8080 as port 80", "kubectl expose pod informant --port=80 --target-port=8080 --name=switchboard"),
+        ],
+        flags: &[
+            flag(None, "--name", "''", true, "The name for the newly created object"),
+            NAMESPACE,
+            flag(None, "--port", "''", true, "The port that the service should serve on; copied from the resource if not specified"),
+            flag(None, "--protocol", "''", true, "The network protocol for the service to be created. Default is 'TCP'"),
+            flag(None, "--target-port", "''", true, "Name or number for the port on the container that the service should direct traffic to"),
+            flag(None, "--type", "''", true, "Type for this service: ClusterIP, NodePort or LoadBalancer. Default is 'ClusterIP'"),
+        ],
+        sample: "deployment/x --port=80",
+    },
+    Verb {
+        name: "rollout status",
+        summary: "Show the status of the rollout",
+        description: "Show the status of a deployment's rollout. This terminal reports the current state and returns; it does not wait for the rollout to finish.",
+        usage: "kubectl rollout status (TYPE NAME | TYPE/NAME) [options]",
+        examples: &[("Show the rollout status of a deployment", "kubectl rollout status deployment/web")],
+        flags: &[NAMESPACE],
+        sample: "deployment/x",
+    },
+    Verb {
+        name: "rollout history",
+        summary: "View rollout history",
+        description: "View the revisions of a deployment, oldest first.",
+        usage: "kubectl rollout history (TYPE NAME | TYPE/NAME) [options]",
+        examples: &[("View the rollout history of a deployment", "kubectl rollout history deployment/web")],
+        flags: &[NAMESPACE],
+        sample: "deployment/x",
+    },
+    Verb {
+        name: "rollout undo",
+        summary: "Undo a previous rollout",
+        description: "Roll back to the previous revision of a deployment, or to a given one.",
+        usage: "kubectl rollout undo (TYPE NAME | TYPE/NAME) [options]",
+        examples: &[
+            ("Roll back to the previous deployment", "kubectl rollout undo deployment/web"),
+            ("Roll back to a specific revision", "kubectl rollout undo deployment/web --to-revision=2"),
+        ],
+        flags: &[NAMESPACE, flag(None, "--to-revision", "0", true, "The revision to rollback to. Default to 0 (last revision)")],
+        sample: "deployment/x",
+    },
+    Verb {
         name: "explain",
         summary: "Get documentation for a resource",
         description: "Describe the fields of a resource, as documented by the Kubernetes API. Name a field by its path to look inside it.",
@@ -235,16 +422,32 @@ pub const VERBS: &[Verb] = &[
 
 /// `kubectl --help`: the commands, grouped like kubectl groups them.
 const GROUPS: &[(&str, &[&str])] = &[
-    ("Basic Commands", &["create", "explain", "get", "delete", "set"]),
-    ("Deploy Commands", &["rollout"]),
+    (
+        "Basic Commands",
+        &["create", "expose", "run", "set", "explain", "get", "delete"],
+    ),
+    ("Deploy Commands", &["rollout", "scale"]),
     ("Troubleshooting and Debugging Commands", &["describe", "logs"]),
     ("Advanced Commands", &["apply", "patch", "replace"]),
+    ("Settings Commands", &["label"]),
 ];
 
 const PARENTS: &[(&str, &str, &[&str])] = &[
-    ("set", "Set specific features on objects", &["env"]),
-    ("rollout", "Manage the rollout of a resource", &["restart"]),
+    ("set", "Set specific features on objects", &["env", "image"]),
+    (
+        "rollout",
+        "Manage the rollout of a resource",
+        &["history", "restart", "status", "undo"],
+    ),
+    (
+        "create secret",
+        "Create a secret using a specified subcommand",
+        &["docker-registry", "generic"],
+    ),
 ];
+
+/// Subcommands a command lists on its own page besides its own usage.
+const CHILDREN: &[(&str, &[&str])] = &[("create", &["configmap", "deployment", "namespace", "secret"])];
 
 fn verb(name: &str) -> Option<&'static Verb> {
     VERBS.iter().find(|v| v.name == name)
@@ -328,6 +531,14 @@ fn render_verb(v: &Verb) -> String {
             out.push_str(&render_flag(f));
             out.push_str("\n\n");
         }
+    }
+    if let Some((_, children)) = CHILDREN.iter().find(|(name, _)| *name == v.name) {
+        out.push_str("Available Commands:\n");
+        for child in *children {
+            let full = format!("{} {child}", v.name);
+            out.push_str(&format!("  {child:<10}{}\n", summary_of(&full)));
+        }
+        out.push('\n');
     }
     out.push_str(&format!(
         "Usage:\n  {} [options]",
@@ -564,7 +775,7 @@ mod tests {
     fn parent_commands_list_their_subcommands() {
         assert_eq!(
             kubectl_help("set"),
-            "Set specific features on objects.\n\nAvailable Commands:\n  env       Update environment variables on a pod template\n\nUsage:\n  kubectl set SUBCOMMAND [options]\n\nUse \"kubectl set <command> --help\" for more information about a given command."
+            "Set specific features on objects.\n\nAvailable Commands:\n  env       Update environment variables on a pod template\n  image     Update the image of a pod template\n\nUsage:\n  kubectl set SUBCOMMAND [options]\n\nUse \"kubectl set <command> --help\" for more information about a given command."
         );
         assert!(kubectl_help("rollout").contains("  restart   Restart a resource"));
         assert_eq!(parse("kubectl set --help"), Ok(Command::Help("set".into())));
@@ -582,7 +793,7 @@ mod tests {
         ] {
             assert!(page.contains(&format!("  {word} ")), "{word}");
         }
-        for word in ["exec", "scale", "expose", "edit", "run", "top", "drain"] {
+        for word in ["exec", "edit", "top", "drain", "cordon", "annotate"] {
             assert!(!page.contains(&format!("  {word} ")), "{word} is not supported yet");
         }
         assert_eq!(parse("kubectl --help"), Ok(Command::Help(String::new())));

@@ -38,9 +38,6 @@ fn kubectl_commands_that_exist_but_are_not_offered_say_so() {
     let mut e = engine();
     for verb in [
         "exec",
-        "scale",
-        "run",
-        "label",
         "annotate",
         "cordon",
         "drain",
@@ -95,9 +92,13 @@ fn kubectl_commands_that_exist_but_are_not_offered_say_so() {
 fn subcommands_that_exist_but_are_not_offered_say_so() {
     let mut e = engine();
     for (line, named) in [
-        ("kubectl rollout status deploy/x", "kubectl rollout status"),
-        ("kubectl rollout undo deploy/x", "kubectl rollout undo"),
-        ("kubectl set image deploy/x c=y", "kubectl set image"),
+        ("kubectl rollout pause deploy/x", "kubectl rollout pause"),
+        ("kubectl rollout resume deploy/x", "kubectl rollout resume"),
+        ("kubectl set selector deploy/x a=b", "kubectl set selector"),
+        ("kubectl set resources deploy/x --limits=cpu=1", "kubectl set resources"),
+        ("kubectl create service clusterip x", "kubectl create service"),
+        ("kubectl create job x --image=y", "kubectl create job"),
+        ("kubectl create secret tls x", "kubectl create secret tls"),
     ] {
         assert_eq!(
             e.eval(line),
@@ -105,13 +106,6 @@ fn subcommands_that_exist_but_are_not_offered_say_so() {
             "{line}"
         );
     }
-    let create = e.eval("kubectl create namespace homicide");
-    assert!(create.starts_with("error: kubectl create namespace"), "{create}");
-    assert!(create.contains("is not available in this terminal"), "{create}");
-    assert!(
-        create.contains("kubectl create -f"),
-        "it points at what works: {create}"
-    );
     assert_eq!(
         e.eval("kubectl rollout nope deploy/x"),
         "error: unknown command \"nope\" for \"kubectl rollout\""
@@ -383,9 +377,8 @@ fn nothing_unsupported_leaves_a_trace_in_the_cluster() {
         "kubectl apply -f a.yaml --dry-run=client",
         "kubectl apply -f jobs.yaml",
         "kubectl delete pod --all",
-        "kubectl scale deploy x --replicas=2",
-        "kubectl rollout undo deploy/x",
-        "kubectl create namespace x",
+        "kubectl rollout pause deploy/x",
+        "kubectl create job x --image=y",
         "kubectl apply -f ?.yaml",
     ] {
         let out = e.eval(line);

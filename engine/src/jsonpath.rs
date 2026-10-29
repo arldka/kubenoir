@@ -162,11 +162,15 @@ fn parse_path(text: &str) -> Result<Vec<Step>, String> {
                     return Err("recursive descent (..) is not supported".into());
                 }
                 i += 1;
-                let start = i;
+                // A field name runs to the next `.` or `[`; `\.` keeps a dot inside it.
+                let mut name = String::new();
                 while i < chars.len() && !matches!(chars[i], '.' | '[') {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        i += 1;
+                    }
+                    name.push(chars[i]);
                     i += 1;
                 }
-                let name: String = chars[start..i].iter().collect();
                 match name.as_str() {
                     "" => return Err(format!("empty field name in {text}")),
                     "*" => steps.push(Step::Wildcard),
@@ -383,6 +387,10 @@ mod tests {
         assert_eq!(r("{.items[*].spec.containers[*].image}"), "app:1 side:1 app:2");
         assert_eq!(r("{.items[0].metadata.labels['app.kubernetes.io/name']}"), "x");
         assert_eq!(r("{.items[0].metadata.labels.app\\.x}"), "");
+        // An escaped dot stays inside the field name.
+        let dotted = json!({"data": {"creds.txt": "x", "creds": {"txt": "nested"}}});
+        assert_eq!(render("{.data.creds\\.txt}", &dotted).unwrap(), "x");
+        assert_eq!(render("{.data.creds.txt}", &dotted).unwrap(), "nested");
         assert_eq!(r("{items[0].metadata.name}"), "a");
         assert_eq!(r("{$.items[1].metadata.name}"), "b");
         assert_eq!(r("{.items[0].spec.replicas}"), "3");

@@ -34,6 +34,13 @@ pub fn execute(command: &Command, env: &Env<'_>, files: &Files) -> (String, Vec<
         Command::Patch(args) => crate::patch::patch(args, env),
         Command::Cat(args) => Ok(printed(crate::fs::cat(&args.paths, files).display())),
         Command::Ls(args) => Ok(printed(crate::fs::ls(&args.paths, files).display())),
+        Command::Run(args) => crate::imperative::run(args, env).map(printed),
+        Command::CreateObject(args) => crate::imperative::create_object(args, env, files).map(printed),
+        Command::SetImage(args) => crate::imperative::set_image(args, env).map(printed),
+        Command::Scale(args) => crate::imperative::scale(args, env).map(printed),
+        Command::Rollout(args) => crate::imperative::rollout(args, env).map(printed),
+        Command::Label(args) => crate::imperative::label(args, env).map(printed),
+        Command::Expose(args) => crate::imperative::expose(args, env).map(printed),
         Command::Help(topic) => Ok(printed(crate::help::kubectl_help(topic))),
         Command::Explain(args) => Ok(printed(
             crate::explain::explain(&args.path).unwrap_or_else(|message| format!("error: {message}")),

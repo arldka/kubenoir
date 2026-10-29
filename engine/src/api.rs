@@ -686,6 +686,11 @@ fn validate_pod_spec(spec: &Value, path: &str, causes: &mut Vec<String>) {
 }
 
 fn validate_workload(spec: &Value, causes: &mut Vec<String>) {
+    if let Some(replicas) = spec["replicas"].as_i64().filter(|r| *r < 0) {
+        causes.push(format!(
+            "spec.replicas: Invalid value: {replicas}: must be greater than or equal to 0"
+        ));
+    }
     let selector = spec["selector"]["matchLabels"].as_object();
     let has_expressions = spec["selector"]["matchExpressions"]
         .as_array()
