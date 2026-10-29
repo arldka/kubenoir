@@ -16,7 +16,7 @@ mod scheduler;
 mod service;
 pub(crate) mod volumes;
 
-pub use kubelet::{select_log_instance, LogSelection};
+pub use kubelet::{answer, is_running, listens, select_log_instance, LogSelection};
 pub use pods::{delete_pod, is_owned_by};
 
 use k8s_openapi::api::core::v1::Pod;

@@ -214,6 +214,16 @@ pub enum Command {
     Rollout(RolloutArgs),
     Label(LabelArgs),
     Expose(ExposeArgs),
+    Exec(ExecArgs),
+}
+
+/// `exec POD [-c CONTAINER] -- COMMAND ARGS...`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecArgs {
+    pub pod: String,
+    pub namespace: Option<String>,
+    pub container: Option<String>,
+    pub command: Vec<String>,
 }
 
 /// `run NAME --image=IMAGE ...`
@@ -572,6 +582,7 @@ pub fn parse_words(words: &[String]) -> Result<Command, ParseError> {
         "scale" => parse_scale(&rest).map(Command::Scale),
         "label" => parse_label(&rest).map(Command::Label),
         "expose" => parse_expose(&rest).map(Command::Expose),
+        "exec" => parse_exec(&rest).map(Command::Exec),
         "create" => match rest.split_first() {
             Some((sub, args)) if !is_flag(sub) => parse_create_object(sub, args),
             _ => parse_manifest_args(&rest, false).map(Command::Create),
@@ -615,7 +626,6 @@ const UNSUPPORTED_VERBS: &[&str] = &[
     "diff",
     "drain",
     "events",
-    "exec",
     "kustomize",
     "options",
     "plugin",
@@ -784,6 +794,43 @@ fn parse_run(args: &[&str]) -> Result<RunArgs, ParseError> {
         restart,
         trailing: trailing.iter().map(|w| w.to_string()).collect(),
         command,
+    })
+}
+
+fn parse_exec(args: &[&str]) -> Result<ExecArgs, ParseError> {
+    let mut container = None;
+    let (positional, trailing, namespace) = scan_args(args, |arg, iter| {
+        if let Some(v) = long_value(arg, "--container", iter)? {
+            container = Some(v);
+        } else if arg == "-c" {
+            container = Some(flag_value(&mut iter.by_ref().copied(), "-c, --container")?.to_string());
+        } else if matches!(arg, "-i" | "-t" | "-it" | "-ti" | "--stdin" | "--tty") {
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    })?;
+    let pod = match positional.as_slice() {
+        [] => {
+            return Err(ParseError::Builtin(
+                "error: expected 'exec (POD | TYPE/NAME) COMMAND [ARG1] [ARG2] ... [ARGN]'.\nPOD or TYPE/NAME is a required argument for the exec command\nSee 'kubectl exec -h' for help and examples".into(),
+            ))
+        }
+        [pod] => pod.strip_prefix("pod/").or_else(|| pod.strip_prefix("pods/")).unwrap_or(pod).to_string(),
+        [_, extra @ ..] => {
+            return Err(ParseError::UnexpectedArgs(extra.iter().map(|a| a.to_string()).collect()));
+        }
+    };
+    if trailing.is_empty() {
+        return Err(ParseError::Builtin(
+            "error: you must specify at least one command for the container".into(),
+        ));
+    }
+    Ok(ExecArgs {
+        pod,
+        namespace,
+        container,
+        command: trailing.iter().map(|w| w.to_string()).collect(),
     })
 }
 

@@ -44,8 +44,6 @@ pub struct Program {
 }
 
 /// What a listening app answers to one request.
-// Nothing asks yet: `kubectl exec … curl` (T22) will.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     pub status: u16,
@@ -91,7 +89,6 @@ pub fn run(apps: &AppSet, spec: Option<&ImageSpec>, launch: &Launch<'_>) -> Prog
     execute(module, vec![launch.image.to_string(), config], launch)
 }
 
-#[allow(dead_code)]
 /// Ask the image's app to answer one request, as a fresh run of the same program in request mode
 /// (`argv[2] == "request"`, then the method and path). The handler prints `status: <code>` and
 /// then the body. An app that is not a server, or one that dies on the request, gives a 500.

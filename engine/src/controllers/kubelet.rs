@@ -18,7 +18,7 @@ use k8s_openapi::api::core::v1::{
     Pod, PodCondition, PodSpec,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::volumes::{self, VolumeState};
 use super::{container_env, images, pod_identity, pods, Env};
@@ -26,7 +26,7 @@ use crate::apps::{self, Launch, Mount, Program, VolEvent};
 use crate::clock;
 use crate::events::{self, EventType, Involved, Source};
 use crate::names;
-use crate::store::StoreError;
+use crate::store::{ClusterStore, StoreError};
 
 /// Runtime-row name for pod-level state (as opposed to a container's).
 const POD_ROW: &str = "*";
@@ -803,6 +803,73 @@ fn go_duration(secs: i64) -> String {
         (0, _) => format!("{m}m{s}s"),
         _ => format!("{h}h{m}m{s}s"),
     }
+}
+
+/// The running container of a pod that declared it listens on `port` when it started, with the
+/// state of that run (V10: no listener means a refused connection).
+fn listener(store: &ClusterStore, pod: &Value, port: i64) -> Result<Option<(String, Runtime)>, StoreError> {
+    let (namespace, name, _) = pod_identity(&serde_json::from_value(pod.clone())?);
+    for (container, state) in store.runtime_for_pod(&namespace, &name)? {
+        if container == POD_ROW || container == volumes::ROW {
+            continue;
+        }
+        let rt: Runtime = serde_json::from_value(state)?;
+        if rt.phase == Phase::Running && rt.program.listens.iter().any(|(_, p)| i64::from(*p) == port) {
+            return Ok(Some((container, rt)));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a connection to the pod on `port` is accepted.
+pub fn listens(store: &ClusterStore, pod: &Value, port: i64) -> bool {
+    listener(store, pod, port).ok().flatten().is_some()
+}
+
+/// Whether the named container of a pod is running right now.
+pub fn is_running(store: &ClusterStore, namespace: &str, pod: &str, container: &str) -> Result<bool, StoreError> {
+    Ok(store
+        .runtime_get(namespace, pod, container)?
+        .map(serde_json::from_value::<Runtime>)
+        .transpose()?
+        .is_some_and(|rt| rt.phase == Phase::Running))
+}
+
+/// What the container listening on `port` answers to a request, asked of the same program that
+/// is running there (with the environment it started with).
+pub fn answer(
+    env: &Env<'_>,
+    pod: &Value,
+    port: i64,
+    method: &str,
+    path: &str,
+) -> Result<Option<apps::Response>, StoreError> {
+    let Some((container, rt)) = listener(env.store, pod, port)? else {
+        return Ok(None);
+    };
+    let image = pod["spec"]["containers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["name"].as_str() == Some(container.as_str()))
+        .and_then(|c| c["image"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let uid = pod["metadata"]["uid"].as_str().unwrap_or_default();
+    Ok(Some(apps::request(
+        &env.config.apps,
+        env.config.images.get(&image),
+        &Launch {
+            image: &image,
+            env: &rt.env,
+            started_at: rt.started_at,
+            seed: names::fnv1a(format!("{uid}/{container}/{}", rt.instance).as_bytes()),
+            mounts: &rt.mounts,
+            timeline: &apps::Timeline::default(),
+        },
+        method,
+        path,
+    )))
 }
 
 #[cfg(test)]

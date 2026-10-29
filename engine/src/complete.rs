@@ -9,8 +9,8 @@ use crate::parser::{shell_split, ResourceKind};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
-const VERBS: [&str; 15] = [
-    "apply", "create", "delete", "describe", "explain", "expose", "get", "label", "logs", "patch", "replace",
+const VERBS: [&str; 16] = [
+    "apply", "create", "delete", "describe", "exec", "explain", "expose", "get", "label", "logs", "patch", "replace",
     "rollout", "run", "scale", "set",
 ];
 const OUTPUT_FORMATS: [&str; 4] = ["json", "name", "wide", "yaml"];
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(
             words(&verbs),
             [
-                "apply", "create", "delete", "describe", "explain", "expose", "get", "label", "logs", "patch",
+                "apply", "create", "delete", "describe", "exec", "explain", "expose", "get", "label", "logs", "patch",
                 "replace", "rollout", "run", "scale", "set"
             ]
         );

@@ -120,6 +120,23 @@ pub const VERBS: &[Verb] = &[
         sample: "x",
     },
     Verb {
+        name: "exec",
+        summary: "Execute a command in a container",
+        description: "Execute a command in a container of a running pod. Only curl is available inside the containers of this precinct: it asks Services and pods what they answer.",
+        usage: "kubectl exec (POD | TYPE/NAME) [-c CONTAINER] [flags] -- COMMAND [args...] [options]",
+        examples: &[
+            ("Ask a service for its front page", "kubectl exec toolbox -- curl http://informant.homicide"),
+            ("Ask a pod directly, quietly", "kubectl exec -n homicide toolbox -- curl -s http://10.244.0.5:8080/healthz"),
+        ],
+        flags: &[
+            flag(Some("-c"), "--container", "''", true, "Container name. If omitted, the first container in the pod will be chosen"),
+            NAMESPACE,
+            flag(Some("-i"), "--stdin", "false", false, "Pass stdin to the container"),
+            flag(Some("-t"), "--tty", "false", false, "Stdin is a TTY"),
+        ],
+        sample: "x -- curl x",
+    },
+    Verb {
         name: "set env",
         summary: "Update environment variables on a pod template",
         description: "List environment variable definitions in a deployment's pod template, or add, change and remove them.\n\nNAME=value sets a variable; NAME- removes it.",
@@ -427,7 +444,7 @@ const GROUPS: &[(&str, &[&str])] = &[
         &["create", "expose", "run", "set", "explain", "get", "delete"],
     ),
     ("Deploy Commands", &["rollout", "scale"]),
-    ("Troubleshooting and Debugging Commands", &["describe", "logs"]),
+    ("Troubleshooting and Debugging Commands", &["describe", "logs", "exec"]),
     ("Advanced Commands", &["apply", "patch", "replace"]),
     ("Settings Commands", &["label"]),
 ];
@@ -790,10 +807,11 @@ mod tests {
         let page = kubectl_help("");
         for word in [
             "get", "describe", "logs", "apply", "patch", "replace", "explain", "rollout", "set", "create", "delete",
+            "exec",
         ] {
             assert!(page.contains(&format!("  {word} ")), "{word}");
         }
-        for word in ["exec", "edit", "top", "drain", "cordon", "annotate"] {
+        for word in ["edit", "top", "drain", "cordon", "annotate"] {
             assert!(!page.contains(&format!("  {word} ")), "{word} is not supported yet");
         }
         assert_eq!(parse("kubectl --help"), Ok(Command::Help(String::new())));

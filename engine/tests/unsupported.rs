@@ -37,7 +37,6 @@ fn names(e: &mut Engine) -> String {
 fn kubectl_commands_that_exist_but_are_not_offered_say_so() {
     let mut e = engine();
     for verb in [
-        "exec",
         "annotate",
         "cordon",
         "drain",
@@ -77,8 +76,8 @@ fn kubectl_commands_that_exist_but_are_not_offered_say_so() {
     );
     // The help page of one says the same, not "unknown command".
     assert_eq!(
-        e.eval("kubectl exec --help"),
-        "error: kubectl exec is not available in this terminal"
+        e.eval("kubectl top --help"),
+        "error: kubectl top is not available in this terminal"
     );
     // Genuinely unknown words are still unknown.
     assert_eq!(

@@ -41,6 +41,7 @@ pub fn execute(command: &Command, env: &Env<'_>, files: &Files) -> (String, Vec<
         Command::Rollout(args) => crate::imperative::rollout(args, env).map(printed),
         Command::Label(args) => crate::imperative::label(args, env).map(printed),
         Command::Expose(args) => crate::imperative::expose(args, env).map(printed),
+        Command::Exec(args) => crate::container_exec::exec(args, env).map(printed),
         Command::Help(topic) => Ok(printed(crate::help::kubectl_help(topic))),
         Command::Explain(args) => Ok(printed(
             crate::explain::explain(&args.path).unwrap_or_else(|message| format!("error: {message}")),

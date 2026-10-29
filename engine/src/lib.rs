@@ -5,6 +5,7 @@ mod api;
 mod apps;
 mod clock;
 mod complete;
+mod container_exec;
 mod controllers;
 mod describe;
 mod events;

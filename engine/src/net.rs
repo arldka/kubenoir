@@ -5,9 +5,6 @@
 //! Callers pass the state of the store at the moment the container started (V32, C14); the
 //! function itself keeps no state and has no randomness.
 
-// Nothing calls the oracle yet: the app ABI (T21) and `db-client` (T23) will.
-#![allow(dead_code)]
-
 use std::collections::BTreeSet;
 
 use serde_json::Value;
