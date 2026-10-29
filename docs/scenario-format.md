@@ -26,6 +26,12 @@ scenarios/sealed-envelope/
 | `briefing` | the story shown in the case file |
 | `objective` | the one visible goal, in the briefing's own words (no extra clues) |
 | `hints` | optional list, revealed one at a time on request |
+| `chapter` | optional whole number from 1: the case's place in the campaign (see below) |
+
+**The campaign.** The game leads the player through the cases in `chapter` order (cases without one
+come last, by id). A new player starts on the first; a case opens when the one before it is solved
+(running out of time does not count). Progress is kept in the browser. Give every case in a
+campaign its own chapter, easiest first.
 
 There is no time setting: **every case gets the same 15 minutes** of cluster time from the
 player's start, and a case still open then closes as `timeUp` (the report names what did not hold).

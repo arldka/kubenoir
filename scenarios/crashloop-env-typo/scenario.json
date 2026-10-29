@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "chapter": 2,
   "id": "crashloop-env-typo",
   "title": "The Payments Pod That Wouldn't Stay Up",
   "briefing": "The payments-api deployment shipped 5 minutes ago and has been restarting ever since. The web tier is healthy. Find out why payments-api keeps dying and bring it back without touching the rest of the cluster.",

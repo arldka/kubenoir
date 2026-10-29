@@ -7,7 +7,8 @@
 		hintsUsed,
 		open,
 		onclose,
-		onrestart
+		onrestart,
+		next = null
 	}: {
 		title: string;
 		status: CaseStatus | null;
@@ -15,6 +16,8 @@
 		open: boolean;
 		onclose: () => void;
 		onrestart: () => void;
+		/** The next case in the campaign, once it is open. */
+		next?: { title: string; href: string } | null;
 	} = $props();
 
 	let dialog: HTMLDialogElement | undefined = $state();
@@ -139,6 +142,15 @@
 			>
 				Back to the terminal
 			</button>
+			{#if next}
+				<a
+					class="rounded border border-ok bg-ok px-4 py-1.5 font-typewriter text-paper"
+					href={next.href}
+					data-testid="next-case"
+				>
+					Next case: {next.title}
+				</a>
+			{/if}
 			<button
 				type="button"
 				class="rounded border border-ink/50 px-4 py-1.5 font-typewriter hover:bg-paper-shade/60"

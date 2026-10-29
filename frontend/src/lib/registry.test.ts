@@ -109,14 +109,30 @@ describe('Registry', () => {
 			])
 		});
 		const list = await new Registry(sources(), fetch).listScenarios();
+		// First source wins for an id; the list itself is in campaign order (here: by id).
 		expect(list.map((s) => [s.id, s.title])).toEqual([
-			['b', 'Remote B'],
-			['a', 'A']
+			['a', 'A'],
+			['b', 'Remote B']
 		]);
 
 		const half = await new Registry(sources(), fakeFetch({ '/registry/scenarios/index.json': '[]' }, ['https://remote'])).listScenarios();
 		expect(half).toEqual([]);
 		await expect(new Registry(sources(), fakeFetch({})).listScenarios()).rejects.toThrow(/No scenario index/);
+	});
+
+	it('lists cases in campaign order: by chapter, then by id, chapterless last', async () => {
+		const fetch = fakeFetch({
+			'/registry/scenarios/index.json': JSON.stringify([
+				{ id: 'zeta' },
+				{ id: 'late', chapter: 3 },
+				{ id: 'alpha' },
+				{ id: 'first', chapter: 1 },
+				{ id: 'second', chapter: 2 },
+				{ id: 'odd', chapter: 'x' }
+			])
+		});
+		const list = await new Registry(sources({ scenarios: ['/registry'] }), fetch).listScenarios();
+		expect(list.map((s) => s.id)).toEqual(['first', 'second', 'late', 'alpha', 'odd', 'zeta']);
 	});
 
 	it('fetches apps with fallback, in parallel, and caches them by reference', async () => {
@@ -163,6 +179,26 @@ describe('pickCase', () => {
 		expect(await pick('')).toEqual({ json: 'FIRST', base: '/registry/scenarios/first/' });
 		expect((await pick('case=second')).json).toBe('SECOND');
 		await expect(pick('case=nope')).rejects.toThrow(/Case "nope" could not be fetched/);
+	});
+
+	it('without ?case= plays the first case the player has not finished', async () => {
+		const fetch = fakeFetch({
+			...files,
+			'/registry/scenarios/index.json': JSON.stringify([
+				{ id: 'second', chapter: 2 },
+				{ id: 'first', chapter: 1 }
+			])
+		});
+		const registry = new Registry(sources({ scenarios: ['/registry'] }), fetch);
+		const play = (completed: string[]) =>
+			pickCase(registry, new URLSearchParams(), { dev: false, completed: new Set(completed) }).then((s) => s.json);
+		expect(await play([])).toBe('FIRST');
+		expect(await play(['first'])).toBe('SECOND');
+		// Everything done: the last case, not an error.
+		expect(await play(['first', 'second'])).toBe('SECOND');
+		// An address names its case whatever the progress.
+		const named = await pickCase(registry, new URLSearchParams('case=second'), { dev: false, completed: new Set() });
+		expect(named.json).toBe('SECOND');
 	});
 
 	it('plays ?scenarioUrl= only in dev builds', async () => {

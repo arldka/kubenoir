@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "chapter": 7,
   "id": "out-of-jurisdiction",
   "title": "Out of Jurisdiction",
   "briefing": "The payments team moved their API to its own namespace, uptown, and since then it cannot start: it crash-loops complaining about its database. The database itself is fine and nobody has touched it. It lives in another precinct's namespace, downtown, and there is a Service in front of it. A toolbox pod in uptown is there for trying things out. Bring payments-api up without changing anything in downtown.",

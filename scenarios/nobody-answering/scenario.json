@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "chapter": 6,
   "id": "nobody-answering",
   "title": "Nobody's Answering",
   "briefing": "The checkout page times out whenever it asks for a payment. The payments pods look perfectly healthy, and the Service in front of them exists, yet nobody answers. A toolbox pod is available to try the Service from the inside: `kubectl exec toolbox -- curl http://payment`. Find out why the call goes nowhere and make it answer, without touching the payments pods.",

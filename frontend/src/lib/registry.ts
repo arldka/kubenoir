@@ -2,7 +2,7 @@
  * Where scenarios and apps come from. The local registry (`/registry`, built by `make registry`)
  * and any remote backend serve the same layout (docs/registry.md), so one client handles both:
  *
- *   {scenarioSource}/scenarios/index.json            [{ id, title, objective }]
+ *   {scenarioSource}/scenarios/index.json            [{ id, title, objective, chapter? }]
  *   {scenarioSource}/scenarios/{id}/scenario.json
  *   {scenarioSource}/scenarios/{id}/{manifest}       the files its cluster.manifests lists
  *   {appRegistry}/apps/{name}/{version}.wasm
@@ -25,6 +25,15 @@ export interface ScenarioSummary {
 	id: string;
 	title: string;
 	objective: string;
+	/** Position in the campaign (1 is first); cases without one come after, by id. */
+	chapter?: number;
+}
+
+/** Campaign order: by chapter, then by id. */
+export function inCampaignOrder(cases: ScenarioSummary[]): ScenarioSummary[] {
+	return [...cases].sort(
+		(a, b) => (a.chapter ?? Infinity) - (b.chapter ?? Infinity) || a.id.localeCompare(b.id)
+	);
 }
 
 /** A scenario file and the folder its manifest references are relative to. */
@@ -122,7 +131,12 @@ export class Registry {
 				if (!Array.isArray(entries)) throw new Error('index is not a list');
 				for (const entry of entries as Partial<ScenarioSummary>[]) {
 					if (typeof entry?.id === 'string' && SEGMENT.test(entry.id) && !seen.has(entry.id)) {
-						seen.set(entry.id, { id: entry.id, title: String(entry.title ?? entry.id), objective: String(entry.objective ?? '') });
+						seen.set(entry.id, {
+							id: entry.id,
+							title: String(entry.title ?? entry.id),
+							objective: String(entry.objective ?? ''),
+							chapter: typeof entry.chapter === 'number' && Number.isFinite(entry.chapter) ? entry.chapter : undefined
+						});
 					}
 				}
 			} catch (e) {
@@ -132,7 +146,7 @@ export class Registry {
 		if (failures.length === this.#sources.scenarios.length) {
 			throw new Error(`No scenario index could be fetched; tried ${failures.join(', ')}`);
 		}
-		return [...seen.values()];
+		return inCampaignOrder([...seen.values()]);
 	}
 
 	/** The scenario JSON for `id`, and where its manifests live (the source that served it). */
@@ -185,12 +199,13 @@ export class Registry {
 
 /**
  * The scenario the page should play: `?scenarioUrl=` (any URL; dev builds only, for authors
- * trying a file), else `?case={id}`, else the first listed case.
+ * trying a file), else `?case={id}`, else the first case in campaign order that the player has
+ * not finished (the first one for a new player, the last one once everything is done).
  */
 export async function pickCase(
 	registry: Registry,
 	params: URLSearchParams,
-	options: { dev: boolean; fetchFn?: typeof fetch }
+	options: { dev: boolean; fetchFn?: typeof fetch; completed?: ReadonlySet<string> }
 ): Promise<ScenarioSource> {
 	const url = params.get('scenarioUrl');
 	if (url && options.dev) {
@@ -198,7 +213,11 @@ export async function pickCase(
 		if (!response.ok) throw new Error(`${url} could not be fetched (${response.status})`);
 		return { json: await response.text(), base: folderOf(url) };
 	}
-	const id = params.get('case') ?? (await registry.listScenarios())[0]?.id;
+	let id = params.get('case');
+	if (!id) {
+		const cases = await registry.listScenarios();
+		id = (cases.find((c) => !options.completed?.has(c.id)) ?? cases.at(-1))?.id ?? null;
+	}
 	if (!id) throw new Error('No cases are published yet');
 	return registry.fetchScenario(id);
 }

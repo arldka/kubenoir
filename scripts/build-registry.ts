@@ -3,7 +3,7 @@
 //
 //   apps/index.json                 {"db-client": ["0.1.0"], ...}
 //   apps/{name}/{version}.wasm      from apps/target/wasm32-wasip1/release (run `make apps` first)
-//   scenarios/index.json            [{"id", "title", "objective"}], sorted by id
+//   scenarios/index.json            [{"id", "title", "objective", "chapter"?}], in campaign order
 //   scenarios/{id}/scenario.json    from scenarios/{id}/scenario.json
 //   scenarios/{id}/{file}           every file its cluster.manifests and files list, at the same path
 //
@@ -53,7 +53,7 @@ mkdirSync(join(out, 'apps'), { recursive: true });
 writeFileSync(join(out, 'apps/index.json'), JSON.stringify(apps, null, '\t') + '\n');
 
 // Scenarios.
-const index: { id: string; title: string; objective: string }[] = [];
+const index: { id: string; title: string; objective: string; chapter?: number }[] = [];
 mkdirSync(join(out, 'scenarios'), { recursive: true });
 for (const dir of readdirSync(join(root, 'scenarios')).sort()) {
 	const file = join(root, 'scenarios', dir, 'scenario.json');
@@ -61,6 +61,7 @@ for (const dir of readdirSync(join(root, 'scenarios')).sort()) {
 	const json = readFileSync(file, 'utf8');
 	const data = JSON.parse(json) as {
 		briefing?: unknown;
+		chapter?: unknown;
 		images?: Record<string, { app?: string }>;
 		cluster?: { manifests?: unknown };
 		files?: unknown;
@@ -101,8 +102,18 @@ for (const dir of readdirSync(join(root, 'scenarios')).sort()) {
 		mkdirSync(dirname(join(published, path)), { recursive: true });
 		cpSync(source, join(published, path));
 	}
-	index.push({ id: meta.id, title: meta.title, objective: meta.objective });
+	if (data.chapter !== undefined && !(Number.isInteger(data.chapter) && (data.chapter as number) >= 1)) {
+		fail(`scenarios/${dir}: chapter must be a whole number from 1`);
+	}
+	index.push({
+		id: meta.id,
+		title: meta.title,
+		objective: meta.objective,
+		...(data.chapter === undefined ? {} : { chapter: data.chapter as number })
+	});
 }
+// Campaign order: by chapter, then by id (cases without a chapter come last).
+index.sort((a, b) => (a.chapter ?? Infinity) - (b.chapter ?? Infinity) || a.id.localeCompare(b.id));
 writeFileSync(join(out, 'scenarios/index.json'), JSON.stringify(index, null, '\t') + '\n');
 
 console.log(

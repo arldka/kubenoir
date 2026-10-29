@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "chapter": 3,
   "id": "changing-the-story",
   "title": "Changing the Story",
   "briefing": "The informant is talking, but he's got his story wrong: he reports every tip as coming from the harbor, and the captain only accepts tips from the docks. His case file, informant.yaml, is in your folder. The captain wants the same informant, same name, same desk, with TIP_SOURCE set to docks. Changing a witness's story turns out to be harder than it sounds.",

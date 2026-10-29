@@ -7,7 +7,7 @@ and by any **remote** backend. One client (`frontend/src/lib/registry.ts`) talks
 ## Layout
 
 ```
-{scenarioSource}/scenarios/index.json        [{ "id", "title", "objective" }]
+{scenarioSource}/scenarios/index.json        [{ "id", "title", "objective", "chapter"? }]
 {scenarioSource}/scenarios/{id}/scenario.json   the scenario file
 {scenarioSource}/scenarios/{id}/{file}          every file its cluster.manifests and files list,
                                                 at the same relative path
@@ -62,7 +62,10 @@ Fetched apps are cached for the session, because references never change.
 
 ## Choosing the case
 
-The page plays `?case={id}`, or the first case in the merged index. In `make dev` builds,
+The index is in campaign order (by `chapter`, then id). The page plays `?case={id}`, or else the first
+case the player has not solved yet (progress lives in the browser's local storage). The case list in
+the sidebar shows what is done, current and locked, and a solved case offers "Next case". `?case=`
+is a plain link, not a lock: it plays any published case, which is how authors test one. In `make dev` builds,
 `?scenarioUrl=https://…/scenario.json` plays any scenario file. Its apps still come from the
 configured registries, which is handy for trying a scenario before publishing it.
 

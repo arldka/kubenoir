@@ -325,3 +325,29 @@ test('playing again after the time ran out starts a fresh case', async ({ page }
 	await expect(screen(page)).toContainText('CrashLoopBackOff');
 	await expect(screen(page)).not.toContainText('sleep 15m');
 });
+
+test('the campaign opens with the first case, locks the rest, and leads on when a case is solved', async ({ page }) => {
+	await page.goto('/');
+	await expect(page.locator('.xterm-rows')).toContainText('detective@cluster:~$');
+	await expect(page.getByText('A Desk of Your Own').first()).toBeVisible();
+
+	const list = page.getByTestId('case-list');
+	await expect(list.locator('li[data-state="current"]')).toHaveCount(1);
+	await expect(list.locator('li').first()).toHaveAttribute('data-state', 'current');
+	await expect(list.locator('li[data-state="locked"]')).toHaveCount(6);
+	await expect(list.locator('a')).toHaveCount(1);
+
+	await page.locator('.xterm').click();
+	await run(page, 'kubectl create namespace homicide');
+	await expect(page.getByTestId('report-outcome')).toHaveText('Case closed', { timeout: 15_000 });
+	await page.getByTestId('next-case').click();
+
+	await expect(page).toHaveURL(/\?case=crashloop-env-typo/);
+	await expect(page.getByText("The Payments Pod That Wouldn't Stay Up").first()).toBeVisible();
+	await expect(page.getByTestId('case-list').locator('li').first()).toHaveAttribute('data-state', 'done');
+	await expect(page.getByTestId('case-list').locator('li[data-state="current"]')).toContainText("Payments Pod");
+
+	// Reopening the game continues where the player left off.
+	await page.goto('/');
+	await expect(page.getByText("The Payments Pod That Wouldn't Stay Up").first()).toBeVisible();
+});

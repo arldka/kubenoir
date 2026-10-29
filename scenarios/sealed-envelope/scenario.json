@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "chapter": 5,
   "id": "sealed-envelope",
   "title": "The Sealed Envelope",
   "briefing": "payments-api was deployed this morning and has not started once. The database password was supposed to arrive in an envelope: a Secret named db-credentials, which nobody ever made. The DBA left the password on a sticky note (case/sticky-note.txt). Seal it properly, and make sure the service really gets in: a password that is almost right is as good as none.",

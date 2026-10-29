@@ -4,6 +4,7 @@
 
 	import CaseFile from '#lib/components/CaseFile.svelte';
 	import CaseReport from '#lib/components/CaseReport.svelte';
+	import Cases from '#lib/components/Cases.svelte';
 	import Objective from '#lib/components/Objective.svelte';
 	import Clock from '#lib/components/Clock.svelte';
 	import Hints from '#lib/components/Hints.svelte';
@@ -11,7 +12,8 @@
 	import Sound from '#lib/components/Sound.svelte';
 	import { armSound } from '#lib/audio/index.js';
 	import { caseStatus, engineState, recordHint, resetEngine, simTime, startClock } from '#lib/engine.js';
-	import { pickCase, Registry, sourcesFromEnv, type ScenarioSource } from '#lib/registry.js';
+	import { loadCompleted, markCompleted, caseState } from '#lib/progress.js';
+	import { pickCase, Registry, sourcesFromEnv, type ScenarioSource, type ScenarioSummary } from '#lib/registry.js';
 	import { caseNumber, parseScenarioMeta, type ScenarioMeta } from '#lib/scenario.js';
 	import Terminal from '#lib/terminal/Terminal.svelte';
 
@@ -24,6 +26,8 @@
 	let meta = $state<ScenarioMeta | null>(null);
 	let loadError = $state<string | null>(null);
 
+	let cases = $state<ScenarioSummary[]>([]);
+	let completed = $state<ReadonlySet<string>>(new Set());
 	let hintsRevealed = $state(0);
 	/** Cluster time (ms) when the player started this attempt, for the "on the case" timer. */
 	let startedAt = $state<number | null>(null);
@@ -40,9 +44,13 @@
 		let closed = false;
 		void (async () => {
 			try {
+				completed = loadCompleted();
 				const source = await pickCase(registry, new URLSearchParams(window.location.search), {
-					dev: import.meta.env.DEV
+					dev: import.meta.env.DEV,
+					completed
 				});
+				// The list is only for the case file's sidebar: a missing index must not stop the game.
+				registry.listScenarios().then((list) => (cases = list)).catch(() => {});
 				const parsed = parseScenarioMeta(source.json);
 				if (closed) return;
 				scenario = source;
@@ -70,7 +78,21 @@
 		if ($caseStatus?.solved && !reportShown) {
 			reportShown = true;
 			reportOpen = true;
+			// Only a solved case opens the next one; running out of time does not.
+			if (meta && $caseStatus.outcome !== 'timeUp') completed = markCompleted(meta.id);
 		}
+	});
+
+	/** Where playing `id` goes: the same page with that case in the address. */
+	const caseHref = (id: string) => `?case=${encodeURIComponent(id)}`;
+
+	/** The case after this one, if it is open (this one is solved by then). */
+	const nextCase = $derived.by(() => {
+		if (!meta || !$caseStatus?.solved || $caseStatus.outcome === 'timeUp') return null;
+		const states = caseState(cases, completed);
+		const at = cases.findIndex((c) => c.id === meta!.id);
+		const next = cases[at + 1];
+		return next && states[at + 1]?.state !== 'locked' ? next : null;
 	});
 
 	async function restart() {
@@ -140,6 +162,7 @@
 						}}
 					/>
 					<RestartCase onrestart={restart} />
+					<Cases {cases} {completed} currentId={meta.id} href={caseHref} />
 				</div>
 			</aside>
 
@@ -184,5 +207,6 @@
 		open={reportOpen}
 		onclose={() => (reportOpen = false)}
 		onrestart={restart}
+		next={nextCase ? { title: nextCase.title, href: caseHref(nextCase.id) } : null}
 	/>
 {/if}

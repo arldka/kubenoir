@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "chapter": 4,
   "id": "wrong-mugshot",
   "title": "Wrong Mugshot",
   "briefing": "Two services were rolled out this morning and neither has a single running pod. evidence-api is stuck on its first start. badge-scanner is stuck too, for a completely different reason. Ops left a handover note (case/registry-note.txt). Both pods should be up, and both images must be the ones the registry actually has.",
