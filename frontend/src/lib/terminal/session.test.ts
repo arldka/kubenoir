@@ -169,7 +169,7 @@ describe('TerminalSession commands', () => {
 		const t = createHarness();
 		await t.start();
 		await t.type('help' + KEY.enter);
-		expect(t.lines().join('\n')).toContain('kubectl logs POD|deploy/NAME');
+		expect(t.lines().join('\n')).toContain('kubectl --help');
 		await t.type('clear' + KEY.enter);
 		expect(t.lines()).toEqual(['$']);
 		expect(t.evaluated).toEqual([]);

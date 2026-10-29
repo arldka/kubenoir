@@ -2,14 +2,13 @@
 
 export const BUILTINS = ['clear', 'help'] as const;
 
-const HELP = `This is a simulated cluster. These commands work:
+const HELP = `This is a simulated cluster. Start here:
 
-  kubectl get pods|deployments|replicasets|events [NAME] [-n NS] [-o wide|json|yaml|name]
-  kubectl describe pod|deployment [NAME]
-  kubectl logs POD|deploy/NAME [-c CONTAINER] [-p] [--tail N] [--timestamps]
-  kubectl set env deployment/NAME KEY=VALUE ... | KEY-   (--list shows the environment)
-  kubectl rollout restart deployment/NAME
-  kubectl delete pod|deployment|replicaset NAME [--force]
+  kubectl --help          the kubectl commands that work, grouped
+  kubectl get --help      help for one command (every command takes --help)
+  kubectl explain pod     what a resource's fields mean
+  cat, ls, echo, grep, head, base64
+                          shell commands; | pipes and > redirects work
   help, clear
 
 Keys: Tab complete   Up/Down history   Ctrl+A/E start/end   Ctrl+U/K/W cut

@@ -8,13 +8,15 @@ use crate::parser::{shell_split, ResourceKind};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
-const VERBS: [&str; 6] = ["delete", "describe", "get", "logs", "rollout", "set"];
+const VERBS: [&str; 11] = [
+    "apply", "create", "delete", "describe", "explain", "get", "logs", "patch", "replace", "rollout", "set",
+];
 const OUTPUT_FORMATS: [&str; 4] = ["json", "name", "wide", "yaml"];
 /// Plural names offered for resource types; aliases are the fallback when nothing matches.
 const TYPES: [&str; 4] = ["deployments", "events", "pods", "replicasets"];
 const TYPE_ALIASES: [&str; 8] = ["deploy", "deployment", "ev", "event", "po", "pod", "replicaset", "rs"];
 /// Flags that consume the following word.
-const VALUE_FLAGS: [&str; 10] = [
+const VALUE_FLAGS: [&str; 18] = [
     "-n",
     "--namespace",
     "-o",
@@ -25,6 +27,14 @@ const VALUE_FLAGS: [&str; 10] = [
     "--env",
     "--grace-period",
     "--tail",
+    "-l",
+    "--selector",
+    "-p",
+    "--patch",
+    "--type",
+    "-f",
+    "--filename",
+    "--lines",
 ];
 
 /// What could complete the word under the cursor.
@@ -106,7 +116,7 @@ fn candidates(previous: &[String], word: &str, store: &ClusterStore) -> Result<V
         return Ok(values.into_iter().map(|v| format!("{flag}={v}")).collect());
     }
     if word.starts_with('-') {
-        return Ok(strings(flags_for(verb)));
+        return Ok(crate::help::flags_of(verb).into_iter().map(String::from).collect());
     }
 
     // Positional arguments (flags and their values removed).
@@ -181,27 +191,6 @@ fn names(store: &ClusterStore, kind: ResourceKind, namespace: &str) -> Result<Ve
         .iter()
         .filter_map(|m| m["metadata"]["name"].as_str().map(String::from))
         .collect())
-}
-
-fn flags_for(verb: &str) -> &'static [&'static str] {
-    match verb {
-        "get" => &["-n", "--namespace", "-o", "--output"],
-        "describe" => &["-n", "--namespace"],
-        "logs" => &[
-            "-n",
-            "--namespace",
-            "-c",
-            "--container",
-            "-p",
-            "--previous",
-            "--tail",
-            "--timestamps",
-        ],
-        "set" => &["-n", "--namespace", "-c", "--container", "-e", "--env", "--list"],
-        "delete" => &["-n", "--namespace", "--force", "--grace-period", "--now"],
-        "rollout" => &["-n", "--namespace"],
-        _ => &[],
-    }
 }
 
 /// The namespace selected earlier on the line, else the default.
@@ -317,7 +306,10 @@ mod tests {
         assert_eq!(complete("ls").1, Vec::<String>::new());
         let (start, verbs) = complete("kubectl ");
         assert_eq!(start, 8);
-        assert_eq!(words(&verbs), ["delete", "describe", "get", "logs", "rollout", "set"]);
+        assert_eq!(
+            words(&verbs),
+            ["apply", "create", "delete", "describe", "explain", "get", "logs", "patch", "replace", "rollout", "set"]
+        );
         assert_eq!(complete("kubectl de").1, ["delete", "describe"]);
         assert_eq!(complete("kubectl lo").1, ["logs"]);
     }
@@ -388,11 +380,24 @@ mod tests {
 
     #[test]
     fn flags_depend_on_the_verb() {
-        assert_eq!(complete("kubectl get -").1, ["--namespace", "--output", "-n", "-o"]);
+        assert_eq!(
+            complete("kubectl get -").1,
+            [
+                "--all-namespaces",
+                "--namespace",
+                "--no-headers",
+                "--output",
+                "--selector",
+                "-A",
+                "-l",
+                "-n",
+                "-o"
+            ]
+        );
         assert_eq!(complete("kubectl get pods --o").1, ["--output"]);
         assert_eq!(complete("kubectl logs x --t").1, ["--tail", "--timestamps"]);
         assert_eq!(complete("kubectl logs x -").1.len(), 8);
-        assert_eq!(complete("kubectl delete pod x --f").1, ["--force"]);
+        assert_eq!(complete("kubectl delete pod x --f").1, ["--filename", "--force"]);
         assert_eq!(complete("kubectl set env deploy/web --l").1, ["--list"]);
         assert_eq!(complete("kubectl describe pod x -").1, ["--namespace", "-n"]);
     }

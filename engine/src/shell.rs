@@ -193,14 +193,18 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
                 continue;
             }
         };
-        let result = match words.first().map(String::as_str) {
-            Some("echo") => Output {
+        let name = words.first().map(String::as_str).unwrap_or_default();
+        let filtered = try_filter(name, &words[1..], &stdin, files);
+        let result = match name {
+            "echo" => Output {
                 stdout: echo(&words[1..]),
                 stderr: Vec::new(),
             },
-            Some("base64") => base64_command(&words[1..], &stdin, files),
-            Some("grep") => grep(&words[1..], &stdin, files),
-            Some("head") => head(&words[1..], &stdin, files),
+            _ if words.iter().skip(1).any(|w| w == "--help") && crate::help::shell_help(name).is_some() => Output {
+                stdout: format!("{}\n", crate::help::shell_help(name).unwrap_or_default()),
+                stderr: Vec::new(),
+            },
+            _ if filtered.is_some() => filtered.unwrap_or_default(),
             _ => match parse(stage) {
                 Err(e) => Output {
                     stdout: String::new(),
@@ -290,6 +294,17 @@ fn run_command(command: Command, env: &Env<'_>, files: &Files, executed: &mut Ve
         output: seen,
     });
     result
+}
+
+/// The text filters (`base64`, `grep`, `head`): they read stdin or files and never touch the
+/// cluster. `None` for any other command.
+pub(crate) fn try_filter(name: &str, args: &[String], stdin: &str, files: &Files) -> Option<Output> {
+    match name {
+        "base64" => Some(base64_command(args, stdin, files)),
+        "grep" => Some(grep(args, stdin, files)),
+        "head" => Some(head(args, stdin, files)),
+        _ => None,
+    }
 }
 
 // ---- echo -----------------------------------------------------------------------------------

@@ -201,6 +201,15 @@ pub enum Command {
     Patch(PatchArgs),
     Cat(PathArgs),
     Ls(PathArgs),
+    /// `kubectl --help` (topic `""`) or `kubectl COMMAND --help` (see `help`).
+    Help(String),
+    Explain(ExplainArgs),
+}
+
+/// `explain RESOURCE[.FIELD...]`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplainArgs {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,6 +392,16 @@ pub fn parse(input: &str) -> Result<Command, ParseError> {
     let verb = tokens.next().ok_or(ParseError::MissingVerb)?;
     let rest: Vec<&str> = tokens.collect();
 
+    if matches!(verb, "--help" | "-h") {
+        return Ok(Command::Help(String::new()));
+    }
+    if verb == "help" {
+        return parse_help_topic(&rest);
+    }
+    if rest.iter().any(|a| matches!(*a, "--help" | "-h")) {
+        return help_for(verb, &rest);
+    }
+
     match verb {
         "get" => parse_get(&rest).map(Command::Get),
         "describe" => parse_describe(&rest).map(Command::Describe),
@@ -391,6 +410,7 @@ pub fn parse(input: &str) -> Result<Command, ParseError> {
         "apply" => parse_manifest_args(&rest, false).map(Command::Apply),
         "replace" => parse_manifest_args(&rest, true).map(Command::Replace),
         "patch" => parse_patch(&rest).map(Command::Patch),
+        "explain" => parse_explain(&rest).map(Command::Explain),
         "create" => match rest.first() {
             Some(sub) if !is_flag(sub) => Err(ParseError::UnknownSubcommand {
                 parent: "create",
@@ -415,6 +435,44 @@ pub fn parse(input: &str) -> Result<Command, ParseError> {
             None => Err(ParseError::MissingSubcommand("rollout")),
         },
         other => Err(ParseError::UnknownVerb(other.to_string())),
+    }
+}
+
+/// `kubectl help [COMMAND...]`
+fn parse_help_topic(args: &[&str]) -> Result<Command, ParseError> {
+    let topic = args.join(" ");
+    if crate::help::is_topic(&topic) {
+        Ok(Command::Help(topic))
+    } else {
+        Err(ParseError::Builtin(format!("Unknown help topic [`{topic}`]")))
+    }
+}
+
+/// `kubectl VERB ... --help`: the page of the command being asked about.
+fn help_for(verb: &str, rest: &[&str]) -> Result<Command, ParseError> {
+    let topic = match (verb, rest.first().copied()) {
+        ("set", Some("env")) => "set env".to_string(),
+        ("rollout", Some("restart")) => "rollout restart".to_string(),
+        (verb, _) if crate::help::is_topic(verb) => verb.to_string(),
+        (verb, _) => return Err(ParseError::UnknownVerb(verb.to_string())),
+    };
+    Ok(Command::Help(topic))
+}
+
+fn parse_explain(args: &[&str]) -> Result<ExplainArgs, ParseError> {
+    let mut targets: Vec<&str> = Vec::new();
+    for arg in args {
+        if is_flag(arg) {
+            return Err(unknown_flag(arg));
+        }
+        targets.push(arg);
+    }
+    match targets.as_slice() {
+        [] => Err(ParseError::MissingResource("explain")),
+        [path] => Ok(ExplainArgs { path: path.to_string() }),
+        [_, extra @ ..] => Err(ParseError::UnexpectedArgs(
+            extra.iter().map(|a| a.to_string()).collect(),
+        )),
     }
 }
 

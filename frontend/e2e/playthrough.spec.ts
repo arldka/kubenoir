@@ -192,7 +192,11 @@ test('a wrong database URL does not bring the service back; the right one does',
 test('the terminal built-ins and error output work', async ({ page }) => {
 	await openCase(page);
 	await run(page, 'help');
-	await expect(screen(page)).toContainText('kubectl logs POD|deploy/NAME');
+	await expect(screen(page)).toContainText('kubectl --help');
+	await run(page, 'kubectl get --help');
+	await expect(screen(page)).toContainText('--selector=');
+	await run(page, 'kubectl explain pod.spec.restartPolicy');
+	await expect(screen(page)).toContainText('Restart policy for all containers within the pod');
 	await run(page, 'kubectl get widgets');
 	await expect(screen(page)).toContainText('the server doesn\'t have a resource type "widgets"');
 	await run(page, 'kubectl get pods -n kube-system');

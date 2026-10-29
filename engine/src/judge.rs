@@ -20,7 +20,7 @@ use crate::parser::{Command, ResourceKind};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
-const VERBS: [&str; 12] = [
+const VERBS: [&str; 13] = [
     "get",
     "describe",
     "logs",
@@ -33,6 +33,7 @@ const VERBS: [&str; 12] = [
     "patch",
     "cat",
     "ls",
+    "explain",
 ];
 const DEFAULT_STABLE_SECS: i64 = 15;
 
@@ -77,7 +78,7 @@ pub struct Cond {
 #[serde(deny_unknown_fields)]
 pub struct CommandMatcher {
     /// `get`, `describe`, `logs`, `set-env`, `rollout-restart`, `delete`, `apply`, `create`,
-    /// `replace`, `patch`, `cat` or `ls` (the last two take a file path as `name`).
+    /// `replace`, `patch`, `cat`, `ls` (these two take a file path as `name`) or `explain`.
     pub verb: String,
     /// Resource kind as kubectl names it (`pods`, `deploy`, ...).
     pub resource: Option<String>,
@@ -464,6 +465,8 @@ fn matches_command(matcher: &CommandMatcher, command: &Command, touched: &[Touch
         | ("create", Command::Create(_))
         | ("replace", Command::Replace(_))
         | ("patch", Command::Patch(_)) => touched_one(),
+        // `name` is the dotted path (`pod.spec.containers`) for `explain`.
+        ("explain", Command::Explain(a)) => matcher.resource.is_none() && named(&[a.path.as_str()]),
         // `name` is a file path for the shell built-ins; they have no resource type.
         ("cat", Command::Cat(a)) | ("ls", Command::Ls(a)) => {
             matcher.resource.is_none() && named(&a.paths.iter().map(String::as_str).collect::<Vec<_>>())
