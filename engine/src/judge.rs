@@ -444,7 +444,7 @@ fn matches_command(matcher: &CommandMatcher, command: &Command, touched: &[Touch
 
     match (matcher.verb.as_str(), command) {
         ("get", Command::Get(a)) => {
-            wanted(a.resource) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
+            kind.is_none_or(|k| k == a.kind) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())
         }
         ("describe", Command::Describe(a)) => {
             wanted(a.resource) && named(&a.names.iter().map(String::as_str).collect::<Vec<_>>())

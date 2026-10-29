@@ -3,6 +3,7 @@
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use serde_json::Value;
 
+use crate::api;
 use crate::clock;
 use crate::controllers::Env;
 use crate::describe::describe;
@@ -11,7 +12,7 @@ use crate::logs::logs;
 use crate::manifests::{self, Files};
 use crate::mutate;
 use crate::parser::{Command, GetArgs, OutputFormat};
-use crate::render::render;
+use crate::render::{render, RenderOptions};
 use crate::scenario::DEFAULT_NAMESPACE;
 use crate::store::{ClusterStore, StoreError};
 
@@ -38,32 +39,58 @@ pub fn execute(command: &Command, env: &Env<'_>, files: &Files) -> (String, Vec<
 }
 
 fn get(args: &GetArgs, store: &ClusterStore, now: &Time) -> Result<String, StoreError> {
+    let Some(info) = api::info(args.kind) else {
+        return Ok(format!(
+            "error: the server doesn't have a resource type \"{}\"",
+            args.kind
+        ));
+    };
     let namespace = args.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
-    let kind = args.resource.kind();
+    // Cluster-scoped kinds live outside every namespace, whatever -n says.
+    let scope = if info.namespaced { namespace } else { "" };
 
     let mut items: Vec<Value> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
     if args.names.is_empty() {
-        items = store.list(kind, namespace)?;
+        items = if args.all_namespaces && info.namespaced {
+            store.list_all(info.kind)?
+        } else {
+            store.list(info.kind, scope)?
+        };
+        items.retain(|m| args.selector.matches(m));
     } else {
         for name in &args.names {
-            match store.get(kind, namespace, name)? {
+            match store.get(info.kind, scope, name)? {
                 Some(manifest) => items.push(manifest),
                 None => errors.push(format!(
                     "Error from server (NotFound): {} \"{name}\" not found",
-                    args.resource.plural()
+                    info.resource()
                 )),
             }
         }
     }
 
     let mut sections: Vec<String> = Vec::new();
-    if items.is_empty() && args.names.is_empty() && matches!(args.output, OutputFormat::Table | OutputFormat::Wide) {
-        sections.push(format!("No resources found in {namespace} namespace."));
+    let tabular = matches!(args.output, OutputFormat::Table | OutputFormat::Wide);
+    if items.is_empty() && args.names.is_empty() && tabular {
+        sections.push(if info.namespaced && !args.all_namespaces {
+            format!("No resources found in {namespace} namespace.")
+        } else {
+            "No resources found".to_string()
+        });
     } else if !items.is_empty() || args.names.is_empty() {
-        let single = args.names.len() == 1;
-        sections.push(render(args.resource, &items, args.output, single, now));
+        let options = RenderOptions {
+            format: &args.output,
+            single: args.names.len() == 1,
+            all_namespaces: args.all_namespaces && info.namespaced,
+            no_headers: args.no_headers,
+            now,
+        };
+        match render(info, &items, &options) {
+            Ok(text) => sections.push(text),
+            Err(message) => return Ok(format!("error: {message}")),
+        }
     }
     sections.extend(errors);
 

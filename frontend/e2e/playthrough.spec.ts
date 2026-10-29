@@ -193,8 +193,8 @@ test('the terminal built-ins and error output work', async ({ page }) => {
 	await openCase(page);
 	await run(page, 'help');
 	await expect(screen(page)).toContainText('kubectl logs POD|deploy/NAME');
-	await run(page, 'kubectl get nodes');
-	await expect(screen(page)).toContainText('the server doesn\'t have a resource type "nodes"');
+	await run(page, 'kubectl get widgets');
+	await expect(screen(page)).toContainText('the server doesn\'t have a resource type "widgets"');
 	await run(page, 'kubectl get pods -n kube-system');
 	await expect(screen(page)).toContainText('etcd-control-plane');
 });

@@ -13,7 +13,7 @@ use crate::exec::execute;
 use crate::fs::{self, Output};
 use crate::judge::{is_error_output, Touched};
 use crate::manifests::{normalize_path, Files};
-use crate::parser::{parse, shell_split, Command, ParseError};
+use crate::parser::{parse, shell_split, Command, OutputFormat, ParseError};
 
 /// A `kubectl`/`cat`/`ls` command a line ran, for the judge.
 pub struct Executed {
@@ -239,6 +239,11 @@ pub fn run(line: &str, env: &Env<'_>, files: &mut Files) -> Line {
     }
 }
 
+/// `-o jsonpath` prints exactly what its template says, with no newline added after it.
+fn exact_bytes(command: &Command) -> bool {
+    matches!(command, Command::Get(args) if matches!(args.output, OutputFormat::JsonPath(_)))
+}
+
 /// A judged command. Its stdout continues down the pipe unless the whole thing was an error.
 fn run_command(command: Command, env: &Env<'_>, files: &Files, executed: &mut Vec<Executed>) -> Output {
     let result = match &command {
@@ -253,6 +258,11 @@ fn run_command(command: Command, env: &Env<'_>, files: &Files, executed: &mut Ve
                 }
             } else if text.is_empty() {
                 Output::default()
+            } else if exact_bytes(&command) {
+                Output {
+                    stdout: text.clone(),
+                    stderr: Vec::new(),
+                }
             } else {
                 Output {
                     stdout: format!("{text}\n"),

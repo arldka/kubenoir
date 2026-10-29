@@ -1,15 +1,16 @@
 //! Output printers for Pods: kubectl-style tables, `-o wide`, `-o name`, `-o json`, `-o yaml`.
 
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
-use k8s_openapi::api::core::v1::{Event, Pod, PodTemplateSpec};
+use k8s_openapi::api::core::v1::{ConfigMap, Event, Namespace, Node, Pod, PodTemplateSpec, Secret, Service};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::api::KindInfo;
 use crate::clock;
-use crate::parser::{OutputFormat, ResourceKind};
+use crate::parser::OutputFormat;
 
 const NONE: &str = "<none>";
 
@@ -28,31 +29,51 @@ struct ListMeta {
     resource_version: &'static str,
 }
 
+/// How `kubectl get` wants its objects printed.
+pub struct RenderOptions<'a> {
+    pub format: &'a OutputFormat,
+    /// One object fetched by name: `-o json|yaml|jsonpath` use the bare object, not a list.
+    pub single: bool,
+    /// `-A`: tables get a NAMESPACE column.
+    pub all_namespaces: bool,
+    pub no_headers: bool,
+    pub now: &'a Time,
+}
+
 /// Render stored manifests of `kind` in the requested format.
 ///
 /// With `single` set (one object fetched by name) `-o json|yaml` prints the bare object,
 /// otherwise a `List` wrapper, matching kubectl. Structured output prints the manifests as
-/// stored (keys sorted, like kubectl's own output).
-pub fn render(kind: ResourceKind, items: &[Value], format: OutputFormat, single: bool, now: &Time) -> String {
-    match format {
-        OutputFormat::Table => table(kind, items, false, now),
-        OutputFormat::Wide => table(kind, items, true, now),
+/// stored (keys sorted, like kubectl's own output). `Err` is a message for `error: ...`.
+pub fn render(info: &KindInfo, items: &[Value], options: &RenderOptions<'_>) -> Result<String, String> {
+    let bare = options.single && items.len() == 1;
+    Ok(match options.format {
+        OutputFormat::Table => table(info, items, false, options.now).print(options),
+        OutputFormat::Wide => table(info, items, true, options.now).print(options),
         OutputFormat::Name => items
             .iter()
             .map(|v| {
                 format!(
                     "{}/{}",
-                    kind.name_prefix(),
+                    info.name_prefix(),
                     v["metadata"]["name"].as_str().unwrap_or_default()
                 )
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        OutputFormat::Json if single && items.len() == 1 => to_json(&items[0]),
+        OutputFormat::Json if bare => to_json(&items[0]),
         OutputFormat::Json => to_json(&item_list(items)),
-        OutputFormat::Yaml if single && items.len() == 1 => to_yaml(&items[0]),
+        OutputFormat::Yaml if bare => to_yaml(&items[0]),
         OutputFormat::Yaml => to_yaml(&item_list(items)),
-    }
+        OutputFormat::JsonPath(template) => {
+            let root = if bare {
+                items[0].clone()
+            } else {
+                serde_json::to_value(item_list(items)).map_err(|e| e.to_string())?
+            };
+            crate::jsonpath::render(template, &root)?
+        }
+    })
 }
 
 fn item_list(items: &[Value]) -> ItemList<'_> {
@@ -64,12 +85,55 @@ fn item_list(items: &[Value]) -> ItemList<'_> {
     }
 }
 
-fn table(kind: ResourceKind, items: &[Value], wide: bool, now: &Time) -> String {
-    match kind {
-        ResourceKind::Pod => pod_table(&typed::<Pod>(items), wide, now),
-        ResourceKind::Event => event_table(&typed::<Event>(items), wide, now),
-        ResourceKind::Deployment => deployment_table(&typed::<Deployment>(items), wide, now),
-        ResourceKind::ReplicaSet => replicaset_table(&typed::<ReplicaSet>(items), wide, now),
+/// Column headers and rows, with each row's namespace kept aside for `-A`.
+struct Table {
+    headers: Vec<&'static str>,
+    rows: Vec<Vec<String>>,
+    namespaces: Vec<String>,
+}
+
+impl Table {
+    fn new<'a>(
+        headers: Vec<&'static str>,
+        rows: Vec<Vec<String>>,
+        metas: impl Iterator<Item = &'a ObjectMeta>,
+    ) -> Table {
+        Table {
+            headers,
+            rows,
+            namespaces: metas.map(|m| m.namespace.clone().unwrap_or_default()).collect(),
+        }
+    }
+
+    fn print(mut self, options: &RenderOptions<'_>) -> String {
+        if options.all_namespaces {
+            self.headers.insert(0, "NAMESPACE");
+            for (row, namespace) in self.rows.iter_mut().zip(self.namespaces) {
+                row.insert(0, namespace);
+            }
+        }
+        if options.no_headers {
+            // Columns are sized by the rows alone, and the header line is dropped.
+            let blank = vec![""; self.headers.len()];
+            return format_table(&blank, &self.rows)
+                .split_once('\n')
+                .map_or_else(String::new, |(_, rows)| rows.to_string());
+        }
+        format_table(&self.headers, &self.rows)
+    }
+}
+
+fn table(info: &KindInfo, items: &[Value], wide: bool, now: &Time) -> Table {
+    match info.kind {
+        "Pod" => pod_table(&typed::<Pod>(items), wide, now),
+        "Event" => event_table(&typed::<Event>(items), wide, now),
+        "Deployment" => deployment_table(&typed::<Deployment>(items), wide, now),
+        "ReplicaSet" => replicaset_table(&typed::<ReplicaSet>(items), wide, now),
+        "ConfigMap" => configmap_table(&typed::<ConfigMap>(items), now),
+        "Secret" => secret_table(&typed::<Secret>(items), now),
+        "Namespace" => namespace_table(&typed::<Namespace>(items), now),
+        "Node" => node_table(&typed::<Node>(items), wide, now),
+        _ => service_table(&typed::<Service>(items), wide, now),
     }
 }
 
@@ -98,7 +162,7 @@ fn to_yaml<T: Serialize>(value: &T) -> String {
     }
 }
 
-fn pod_table(pods: &[Pod], wide: bool, now: &Time) -> String {
+fn pod_table(pods: &[Pod], wide: bool, now: &Time) -> Table {
     let mut headers = vec!["NAME", "READY", "STATUS", "RESTARTS", "AGE"];
     if wide {
         headers.extend(["IP", "NODE", "NOMINATED NODE", "READINESS GATES"]);
@@ -137,7 +201,7 @@ fn pod_table(pods: &[Pod], wide: bool, now: &Time) -> String {
         })
         .collect();
 
-    format_table(&headers, &rows)
+    Table::new(headers, rows, pods.iter().map(|p| &p.metadata))
 }
 
 /// Render a kubectl-style table: columns padded to the widest cell plus three spaces.
@@ -188,7 +252,7 @@ pub(crate) fn event_age(event: &Event, now: i64) -> String {
     }
 }
 
-fn event_table(events: &[Event], wide: bool, now: &Time) -> String {
+fn event_table(events: &[Event], wide: bool, now: &Time) -> Table {
     let now = clock::secs(now);
     let mut sorted: Vec<&Event> = events.iter().collect();
     sorted.sort_by_key(|e| (event_secs(&e.last_timestamp).unwrap_or(0), e.metadata.name.clone()));
@@ -237,7 +301,7 @@ fn event_table(events: &[Event], wide: bool, now: &Time) -> String {
         })
         .collect();
 
-    format_table(&headers, &rows)
+    Table::new(headers, rows, sorted.iter().map(|e| &e.metadata))
 }
 
 fn object_age(meta: &ObjectMeta, now: &Time) -> String {
@@ -272,7 +336,7 @@ fn workload_wide(template: Option<&PodTemplateSpec>, selector: Option<&LabelSele
     ]
 }
 
-fn deployment_table(deployments: &[Deployment], wide: bool, now: &Time) -> String {
+fn deployment_table(deployments: &[Deployment], wide: bool, now: &Time) -> Table {
     let mut headers = vec!["NAME", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"];
     if wide {
         headers.extend(["CONTAINERS", "IMAGES", "SELECTOR"]);
@@ -296,10 +360,10 @@ fn deployment_table(deployments: &[Deployment], wide: bool, now: &Time) -> Strin
             row
         })
         .collect();
-    format_table(&headers, &rows)
+    Table::new(headers, rows, deployments.iter().map(|d| &d.metadata))
 }
 
-fn replicaset_table(sets: &[ReplicaSet], wide: bool, now: &Time) -> String {
+fn replicaset_table(sets: &[ReplicaSet], wide: bool, now: &Time) -> Table {
     let mut headers = vec!["NAME", "DESIRED", "CURRENT", "READY", "AGE"];
     if wide {
         headers.extend(["CONTAINERS", "IMAGES", "SELECTOR"]);
@@ -325,7 +389,223 @@ fn replicaset_table(sets: &[ReplicaSet], wide: bool, now: &Time) -> String {
             row
         })
         .collect();
-    format_table(&headers, &rows)
+    Table::new(headers, rows, sets.iter().map(|r| &r.metadata))
+}
+
+fn configmap_table(items: &[ConfigMap], now: &Time) -> Table {
+    let rows = items
+        .iter()
+        .map(|c| {
+            let data = c.data.as_ref().map_or(0, |d| d.len()) + c.binary_data.as_ref().map_or(0, |d| d.len());
+            vec![
+                c.metadata.name.clone().unwrap_or_default(),
+                data.to_string(),
+                object_age(&c.metadata, now),
+            ]
+        })
+        .collect();
+    Table::new(vec!["NAME", "DATA", "AGE"], rows, items.iter().map(|c| &c.metadata))
+}
+
+fn secret_table(items: &[Secret], now: &Time) -> Table {
+    let rows = items
+        .iter()
+        .map(|s| {
+            vec![
+                s.metadata.name.clone().unwrap_or_default(),
+                s.type_.clone().unwrap_or_default(),
+                s.data.as_ref().map_or(0, |d| d.len()).to_string(),
+                object_age(&s.metadata, now),
+            ]
+        })
+        .collect();
+    Table::new(
+        vec!["NAME", "TYPE", "DATA", "AGE"],
+        rows,
+        items.iter().map(|s| &s.metadata),
+    )
+}
+
+fn namespace_table(items: &[Namespace], now: &Time) -> Table {
+    let rows = items
+        .iter()
+        .map(|n| {
+            vec![
+                n.metadata.name.clone().unwrap_or_default(),
+                n.status.as_ref().and_then(|s| s.phase.clone()).unwrap_or_default(),
+                object_age(&n.metadata, now),
+            ]
+        })
+        .collect();
+    Table::new(vec!["NAME", "STATUS", "AGE"], rows, items.iter().map(|n| &n.metadata))
+}
+
+fn or_none(text: String) -> String {
+    if text.is_empty() {
+        NONE.into()
+    } else {
+        text
+    }
+}
+
+/// kubectl's node status: `Ready`, `NotReady` or `Unknown`, plus `,SchedulingDisabled`.
+fn node_status(node: &Node) -> String {
+    let ready = node
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .and_then(|cs| cs.iter().find(|c| c.type_ == "Ready"));
+    let mut status = match ready.map(|c| c.status.as_str()) {
+        Some("True") => "Ready",
+        Some("False") => "NotReady",
+        _ => "Unknown",
+    }
+    .to_string();
+    if node.spec.as_ref().and_then(|s| s.unschedulable) == Some(true) {
+        status.push_str(",SchedulingDisabled");
+    }
+    status
+}
+
+fn node_table(items: &[Node], wide: bool, now: &Time) -> Table {
+    let mut headers = vec!["NAME", "STATUS", "ROLES", "AGE", "VERSION"];
+    if wide {
+        headers.extend([
+            "INTERNAL-IP",
+            "EXTERNAL-IP",
+            "OS-IMAGE",
+            "KERNEL-VERSION",
+            "CONTAINER-RUNTIME",
+        ]);
+    }
+    let rows = items
+        .iter()
+        .map(|n| {
+            let info = n.status.as_ref().and_then(|s| s.node_info.as_ref());
+            let roles = n
+                .metadata
+                .labels
+                .iter()
+                .flatten()
+                .filter_map(|(k, _)| k.strip_prefix("node-role.kubernetes.io/"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut row = vec![
+                n.metadata.name.clone().unwrap_or_default(),
+                node_status(n),
+                or_none(roles),
+                object_age(&n.metadata, now),
+                info.map(|i| i.kubelet_version.clone()).unwrap_or_default(),
+            ];
+            if wide {
+                let address = |kind: &str| {
+                    n.status
+                        .as_ref()
+                        .and_then(|s| s.addresses.as_ref())
+                        .and_then(|a| a.iter().find(|a| a.type_ == kind))
+                        .map_or_else(|| NONE.to_string(), |a| a.address.clone())
+                };
+                let from_info = |f: fn(&k8s_openapi::api::core::v1::NodeSystemInfo) -> &String| {
+                    info.map(|i| f(i).clone())
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or_else(|| "<unknown>".into())
+                };
+                row.extend([
+                    address("InternalIP"),
+                    address("ExternalIP"),
+                    from_info(|i| &i.os_image),
+                    from_info(|i| &i.kernel_version),
+                    from_info(|i| &i.container_runtime_version),
+                ]);
+            }
+            row
+        })
+        .collect();
+    Table::new(headers, rows, items.iter().map(|n| &n.metadata))
+}
+
+fn service_ports(service: &Service) -> String {
+    let ports = service.spec.as_ref().and_then(|s| s.ports.as_ref());
+    let text = ports
+        .into_iter()
+        .flatten()
+        .map(|p| {
+            let protocol = p.protocol.as_deref().unwrap_or("TCP");
+            match p.node_port {
+                Some(node_port) if node_port != 0 => format!("{}:{node_port}/{protocol}", p.port),
+                _ => format!("{}/{protocol}", p.port),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    or_none(text)
+}
+
+fn service_external_ip(service: &Service) -> String {
+    let Some(spec) = service.spec.as_ref() else {
+        return NONE.into();
+    };
+    match spec.type_.as_deref() {
+        Some("ExternalName") => spec.external_name.clone().unwrap_or_else(|| NONE.into()),
+        Some("LoadBalancer") => {
+            let ingress = service
+                .status
+                .as_ref()
+                .and_then(|s| s.load_balancer.as_ref())
+                .and_then(|l| l.ingress.as_ref());
+            let ips = ingress
+                .into_iter()
+                .flatten()
+                .filter_map(|i| i.ip.clone().or_else(|| i.hostname.clone()))
+                .collect::<Vec<_>>()
+                .join(",");
+            if ips.is_empty() {
+                "<pending>".into()
+            } else {
+                ips
+            }
+        }
+        _ => or_none(
+            spec.external_ips
+                .iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+    }
+}
+
+fn service_table(items: &[Service], wide: bool, now: &Time) -> Table {
+    let mut headers = vec!["NAME", "TYPE", "CLUSTER-IP", "EXTERNAL-IP", "PORT(S)", "AGE"];
+    if wide {
+        headers.push("SELECTOR");
+    }
+    let rows = items
+        .iter()
+        .map(|s| {
+            let spec = s.spec.as_ref();
+            let mut row = vec![
+                s.metadata.name.clone().unwrap_or_default(),
+                spec.and_then(|p| p.type_.clone()).unwrap_or_default(),
+                spec.and_then(|p| p.cluster_ip.clone())
+                    .filter(|ip| !ip.is_empty())
+                    .unwrap_or_else(|| NONE.into()),
+                service_external_ip(s),
+                service_ports(s),
+                object_age(&s.metadata, now),
+            ];
+            if wide {
+                let selector = spec
+                    .and_then(|p| p.selector.as_ref())
+                    .map(|m| m.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","))
+                    .unwrap_or_default();
+                row.push(or_none(selector));
+            }
+            row
+        })
+        .collect();
+    Table::new(headers, rows, items.iter().map(|s| &s.metadata))
 }
 
 fn pod_ready(pod: &Pod) -> String {
@@ -484,9 +764,20 @@ mod tests {
         serde_json::from_value(json!("2026-10-27T18:30:00Z")).unwrap()
     }
 
+    fn render_kind(kind: &str, items: &[Value], format: OutputFormat, single: bool, now: &Time) -> String {
+        let options = RenderOptions {
+            format: &format,
+            single,
+            all_namespaces: false,
+            no_headers: false,
+            now,
+        };
+        render(crate::api::info(kind).unwrap(), items, &options).unwrap()
+    }
+
     fn render_pods(pods: &[Pod], format: OutputFormat, single: bool, now: &Time) -> String {
         let items: Vec<Value> = pods.iter().map(|p| serde_json::to_value(p).unwrap()).collect();
-        render(ResourceKind::Pod, &items, format, single, now)
+        render_kind("Pod", &items, format, single, now)
     }
 
     fn event(reason: &str, count: i32, first: &str, last: &str) -> Value {
@@ -697,7 +988,7 @@ mod tests {
             event("BackOff", 14, "2026-10-27T17:44:00Z", "2026-10-27T18:27:00Z"),
             event("Scheduled", 1, "2026-10-27T17:43:00Z", "2026-10-27T17:43:00Z"),
         ];
-        let out = render(ResourceKind::Event, &items, OutputFormat::Table, false, &now());
+        let out = render_kind("Event", &items, OutputFormat::Table, false, &now());
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines[0].starts_with("LAST SEEN"), "{out}");
         assert!(lines[1].contains("Scheduled") && lines[1].starts_with("47m "), "{out}");
@@ -711,7 +1002,7 @@ mod tests {
     #[test]
     fn events_wide_adds_source_and_counts() {
         let items = [event("BackOff", 2, "2026-10-27T18:00:00Z", "2026-10-27T18:10:00Z")];
-        let out = render(ResourceKind::Event, &items, OutputFormat::Wide, false, &now());
+        let out = render_kind("Event", &items, OutputFormat::Wide, false, &now());
         assert!(out.lines().next().unwrap().contains("SUBOBJECT"));
         let row = out.lines().nth(1).unwrap();
         assert!(
@@ -724,7 +1015,7 @@ mod tests {
     fn name_format_uses_kind_prefix() {
         let items = [event("BackOff", 1, "2026-10-27T18:00:00Z", "2026-10-27T18:00:00Z")];
         assert_eq!(
-            render(ResourceKind::Event, &items, OutputFormat::Name, false, &now()),
+            render_kind("Event", &items, OutputFormat::Name, false, &now()),
             "event/p.BackOff"
         );
     }

@@ -71,8 +71,8 @@ fn errors_read_like_kubectl() {
         "No resources found in ghost namespace."
     );
     assert_eq!(
-        e.eval("kubectl get nodes"),
-        "error: the server doesn't have a resource type \"nodes\""
+        e.eval("kubectl get widgets"),
+        "error: the server doesn't have a resource type \"widgets\""
     );
     assert_eq!(
         e.eval("kubectl apply -f x.yaml"),

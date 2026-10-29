@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::selector::Selector;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceKind {
     Pod,
@@ -52,13 +54,15 @@ impl ResourceKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputFormat {
     Table,
     Wide,
     Json,
     Yaml,
     Name,
+    /// `-o jsonpath=TEMPLATE`
+    JsonPath(String),
 }
 
 impl OutputFormat {
@@ -69,17 +73,30 @@ impl OutputFormat {
             "json" => Ok(OutputFormat::Json),
             "yaml" => Ok(OutputFormat::Yaml),
             "name" => Ok(OutputFormat::Name),
-            other => Err(ParseError::UnknownOutputFormat(other.to_string())),
+            "jsonpath" => Err(ParseError::MissingTemplate),
+            other => match other.strip_prefix("jsonpath=") {
+                Some(template) => Ok(OutputFormat::JsonPath(template.to_string())),
+                None => Err(ParseError::UnknownOutputFormat(
+                    other.split('=').next().unwrap_or(other).to_string(),
+                )),
+            },
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetArgs {
-    pub resource: ResourceKind,
+    /// The kind to list, as the API registry names it (`Pod`, `ConfigMap`).
+    pub kind: &'static str,
     pub names: Vec<String>,
     pub namespace: Option<String>,
     pub output: OutputFormat,
+    /// `-l`: only objects whose labels match.
+    pub selector: Selector,
+    /// `-A`: every namespace.
+    pub all_namespaces: bool,
+    /// `--no-headers`
+    pub no_headers: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +239,11 @@ pub enum ParseError {
     /// A real kubectl feature this terminal does not offer.
     Unsupported(&'static str),
     UnexpectedArgs(Vec<String>),
+    /// `-o jsonpath` without `=TEMPLATE`.
+    MissingTemplate,
+    InvalidSelector(String),
+    /// `get -A NAME`
+    NameAcrossNamespaces,
     /// `patch` without `-p`.
     MissingPatch,
     InvalidPatchType(String),
@@ -259,7 +281,7 @@ impl fmt::Display for ParseError {
             }
             ParseError::UnknownOutputFormat(format) => write!(
                 f,
-                "error: unable to match a printer suitable for the output format \"{format}\", allowed formats are: json,name,wide,yaml"
+                "error: unable to match a printer suitable for the output format \"{format}\", allowed formats are: json,jsonpath,name,wide,yaml"
             ),
             ParseError::InvalidInt { flag, value } => write!(
                 f,
@@ -286,6 +308,11 @@ impl fmt::Display for ParseError {
             }
             ParseError::Unsupported(what) => write!(f, "error: {what} is not available in this terminal"),
             ParseError::UnexpectedArgs(args) => write!(f, "error: Unexpected args: [{}]", args.join(" ")),
+            ParseError::MissingTemplate => write!(f, "error: template format specified but no template given"),
+            ParseError::InvalidSelector(message) => write!(f, "error: {message}"),
+            ParseError::NameAcrossNamespaces => {
+                write!(f, "error: a resource cannot be retrieved by name across all namespaces")
+            }
             ParseError::MissingPatch => write!(f, "error: must specify -p to patch"),
             ParseError::InvalidPatchType(t) => write!(
                 f,
@@ -495,12 +522,56 @@ impl ResourceArgs {
     }
 }
 
+/// `TYPE`, `TYPE NAME...` or `TYPE/NAME...` for `get`, resolved through the API registry so any
+/// registered kind works.
+#[derive(Default)]
+struct KindArgs {
+    type_arg: Option<&'static str>,
+    slash_kind: Option<&'static str>,
+    names: Vec<String>,
+}
+
+impl KindArgs {
+    fn resolve(arg: &str) -> Result<&'static str, ParseError> {
+        crate::api::kind_for_arg(arg)
+            .map(|k| k.kind)
+            .ok_or_else(|| ParseError::UnsupportedResource(arg.to_string()))
+    }
+
+    fn push(&mut self, arg: &str) -> Result<(), ParseError> {
+        if let Some((kind, name)) = arg.split_once('/') {
+            self.slash_kind = Some(Self::resolve(kind)?);
+            self.names.push(name.to_string());
+        } else if self.type_arg.is_none() {
+            self.type_arg = Some(Self::resolve(arg)?);
+        } else {
+            self.names.push(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self, verb: &'static str) -> Result<(&'static str, Vec<String>), ParseError> {
+        if self.type_arg.is_some() && self.slash_kind.is_some() {
+            return Err(ParseError::MixedResourceForms);
+        }
+        let kind = self
+            .type_arg
+            .or(self.slash_kind)
+            .ok_or(ParseError::MissingResource(verb))?;
+        Ok((kind, self.names))
+    }
+}
+
 fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
     const OUTPUT_FLAG: &str = "--output";
 
-    let mut positional = ResourceArgs::default();
+    let mut positional = KindArgs::default();
     let mut namespace: Option<String> = None;
     let mut output = OutputFormat::Table;
+    let mut selector = Selector::default();
+    let (mut all_namespaces, mut no_headers) = (false, false);
+
+    let parse_selector = |text: &str| Selector::parse(text).map_err(ParseError::InvalidSelector);
 
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
@@ -510,10 +581,20 @@ fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
             output = OutputFormat::parse(flag_value(&mut iter, "-o, --output")?)?;
         } else if let Some(value) = take_long(arg, OUTPUT_FLAG, &mut iter)? {
             output = OutputFormat::parse(&value)?;
+        } else if arg == "-l" {
+            selector = parse_selector(flag_value(&mut iter, "-l, --selector")?)?;
+        } else if let Some(value) = take_long(arg, "--selector", &mut iter)? {
+            selector = parse_selector(&value)?;
+        } else if arg == "-A" || arg == "--all-namespaces" {
+            all_namespaces = true;
+        } else if arg == "--no-headers" {
+            no_headers = true;
         } else if arg.starts_with("--") {
             return Err(unknown_flag(arg));
         } else if let Some(value) = arg.strip_prefix("-o") {
             output = OutputFormat::parse(value)?;
+        } else if let Some(value) = arg.strip_prefix("-l") {
+            selector = parse_selector(value)?;
         } else if is_flag(arg) {
             return Err(unknown_flag(arg));
         } else {
@@ -521,12 +602,18 @@ fn parse_get(args: &[&str]) -> Result<GetArgs, ParseError> {
         }
     }
 
-    let (resource, names) = positional.finish("get")?;
+    let (kind, names) = positional.finish("get")?;
+    if all_namespaces && !names.is_empty() {
+        return Err(ParseError::NameAcrossNamespaces);
+    }
     Ok(GetArgs {
-        resource,
+        kind,
         names,
         namespace,
         output,
+        selector,
+        all_namespaces,
+        no_headers,
     })
 }
 
@@ -917,10 +1004,13 @@ mod tests {
 
     fn get(names: &[&str], namespace: Option<&str>, output: OutputFormat) -> Result<Command, ParseError> {
         Ok(Command::Get(GetArgs {
-            resource: ResourceKind::Pod,
+            kind: "Pod",
             names: names.iter().map(|s| s.to_string()).collect(),
             namespace: namespace.map(String::from),
             output,
+            selector: Selector::default(),
+            all_namespaces: false,
+            no_headers: false,
         }))
     }
 
@@ -947,18 +1037,56 @@ mod tests {
             assert_eq!(parse(cmd), get(&[], None, OutputFormat::Table), "{cmd}");
         }
         for (cmd, kind) in [
-            ("kubectl get events", ResourceKind::Event),
-            ("kubectl get ev", ResourceKind::Event),
-            ("kubectl get deployments", ResourceKind::Deployment),
-            ("kubectl get deploy", ResourceKind::Deployment),
-            ("kubectl get replicasets", ResourceKind::ReplicaSet),
-            ("kubectl get rs", ResourceKind::ReplicaSet),
+            ("kubectl get events", "Event"),
+            ("kubectl get ev", "Event"),
+            ("kubectl get deployments", "Deployment"),
+            ("kubectl get deploy", "Deployment"),
+            ("kubectl get replicasets", "ReplicaSet"),
+            ("kubectl get rs", "ReplicaSet"),
+            ("kubectl get cm", "ConfigMap"),
+            ("kubectl get ns", "Namespace"),
+            ("kubectl get svc", "Service"),
+            ("kubectl get nodes", "Node"),
+            ("kubectl get secrets", "Secret"),
+            ("kubectl get deployments.apps", "Deployment"),
         ] {
             let Ok(Command::Get(args)) = parse(cmd) else {
                 panic!("{cmd}")
             };
-            assert_eq!(args.resource, kind, "{cmd}");
+            assert_eq!(args.kind, kind, "{cmd}");
         }
+    }
+
+    #[test]
+    fn parses_get_selectors_scopes_and_jsonpath() {
+        let Ok(Command::Get(args)) = parse("kubectl get pods -l app=web,tier!=db -A --no-headers") else {
+            panic!("parses")
+        };
+        assert!(args.all_namespaces && args.no_headers);
+        assert_eq!(args.selector, Selector::parse("app=web,tier!=db").unwrap());
+        for cmd in [
+            "kubectl get pods -lapp=web,tier!=db",
+            "kubectl get pods --selector app=web,tier!=db",
+        ] {
+            let Ok(Command::Get(other)) = parse(cmd) else {
+                panic!("{cmd}")
+            };
+            assert_eq!(other.selector, args.selector, "{cmd}");
+        }
+        let Ok(Command::Get(args)) = parse("kubectl get pod web -o jsonpath={.metadata.name}") else {
+            panic!("parses")
+        };
+        assert_eq!(args.output, OutputFormat::JsonPath("{.metadata.name}".into()));
+        assert_eq!(parse("kubectl get pods -o jsonpath"), Err(ParseError::MissingTemplate));
+        assert_eq!(
+            parse("kubectl get pods -o go-template={{.x}}"),
+            Err(ParseError::UnknownOutputFormat("go-template".into()))
+        );
+        assert_eq!(parse("kubectl get pod web -A"), Err(ParseError::NameAcrossNamespaces));
+        assert_eq!(
+            parse("kubectl get pods -l 'a b'").unwrap_err().to_string(),
+            "error: couldn't parse the selector string \"a b\": invalid selector"
+        );
     }
 
     #[test]
@@ -988,7 +1116,7 @@ mod tests {
                 format!("kubectl get pods --output {flag}"),
                 format!("kubectl get pods --output={flag}"),
             ] {
-                assert_eq!(parse(&cmd), get(&[], None, format), "{cmd}");
+                assert_eq!(parse(&cmd), get(&[], None, format.clone()), "{cmd}");
             }
         }
     }
@@ -1131,8 +1259,8 @@ mod tests {
         assert_eq!(parse("kubectl nope"), Err(ParseError::UnknownVerb("nope".into())));
         assert_eq!(parse("kubectl get"), Err(ParseError::MissingResource("get")));
         assert_eq!(
-            parse("kubectl get nodes"),
-            Err(ParseError::UnsupportedResource("nodes".into()))
+            parse("kubectl get widgets"),
+            Err(ParseError::UnsupportedResource("widgets".into()))
         );
         assert_eq!(
             parse("kubectl get pods -n"),

@@ -122,6 +122,11 @@ pub fn kind_for_arg(arg: &str) -> Option<&'static KindInfo> {
     })
 }
 
+/// The registry entry for a kind name (`Pod`).
+pub fn info(kind: &str) -> Option<&'static KindInfo> {
+    KINDS.iter().find(|k| k.kind == kind)
+}
+
 /// The kind a manifest declares, by `kind` and `apiVersion`.
 pub fn kind_for(kind: &str, api_version: &str) -> Option<&'static KindInfo> {
     KINDS.iter().find(|k| k.kind == kind && k.api_version == api_version)
@@ -749,6 +754,21 @@ fn apply_defaults(info: &KindInfo, name: &str, object: &mut Value) {
             set_default(obj(&mut object["status"]), "phase", json!("Active"));
         }
         "Secret" => set_default(obj(object), "type", json!("Opaque")),
+        "Node" => {
+            // What a kubelet reports for a healthy node; authored status wins.
+            let status = obj(&mut object["status"]);
+            set_default(
+                status,
+                "conditions",
+                json!([{"type": "Ready", "status": "True", "reason": "KubeletReady",
+                        "message": "kubelet is posting ready status"}]),
+            );
+            set_default(
+                obj(status.entry("nodeInfo").or_insert_with(|| json!({}))),
+                "kubeletVersion",
+                json!("v1.36.0"),
+            );
+        }
         _ => {}
     }
 }
