@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "crashloop-env-typo",
   "title": "The Payments Pod That Wouldn't Stay Up",
-  "briefing": "The payments-api deployment shipped 47 minutes ago and has been restarting ever since. The web tier is healthy. Find out why payments-api keeps dying and bring it back without touching the rest of the cluster.",
+  "briefing": "The payments-api deployment shipped 5 minutes ago and has been restarting ever since. The web tier is healthy. Find out why payments-api keeps dying and bring it back without touching the rest of the cluster.",
   "objective": "Find out why payments-api keeps dying and bring it back without touching the rest of the cluster.",
   "hints": [
     "Start with what the pods are doing: which command shows why a container keeps exiting?",
@@ -175,7 +175,7 @@
     }
   },
   "cluster": {
-    "startedAt": "2026-10-27T17:43:00Z",
+    "startedAt": "2026-10-27T18:24:55Z",
     "now": "2026-10-27T18:30:00Z",
     "manifests": [
       "manifests/nodes.yaml",

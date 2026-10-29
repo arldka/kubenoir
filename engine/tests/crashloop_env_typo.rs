@@ -36,7 +36,7 @@ fn payments_rows(e: &mut Engine) -> Vec<Vec<String>> {
 }
 
 #[test]
-fn the_player_starts_47_minutes_into_a_crash_loop() {
+fn the_player_starts_five_minutes_into_a_crash_loop() {
     let mut e = engine();
     assert_eq!(e.now(), "2026-10-27T18:30:00Z");
     let pods = e.eval("kubectl get pods");
@@ -46,7 +46,7 @@ fn the_player_starts_47_minutes_into_a_crash_loop() {
 
     let payments = payments_rows(&mut e);
     assert_eq!(payments.len(), 1, "{pods}");
-    assert_eq!(payments[0][1..], ["0/1", "CrashLoopBackOff", "256", "47m"]);
+    assert_eq!(payments[0][1..], ["0/1", "CrashLoopBackOff", "27", "5m5s"]);
 
     assert!(e.eval("kubectl get pods -n kube-system").contains("etcd-control-plane"));
 }
@@ -80,7 +80,7 @@ fn describe_and_events_point_at_the_typo_and_the_backoff() {
         "      Reason:       CrashLoopBackOff",
         "    Last State:     Terminated",
         "      Exit Code:    1",
-        "    Restart Count:  256",
+        "    Restart Count:  27",
         "      PORT:         8080",
         "      DATABSE_URL:  postgres://payments@postgres.default.svc.cluster.local:5432/payments",
     ] {
@@ -100,7 +100,7 @@ fn describe_and_events_point_at_the_typo_and_the_backoff() {
         .find(|l| l.contains("BackOff"))
         .unwrap_or_else(|| panic!("{events}"));
     assert!(
-        backoff.contains("Warning") && backoff.contains("(x256 over 4"),
+        backoff.contains("Warning") && backoff.contains("(x27 over 4m"),
         "{backoff}"
     );
     assert!(backoff.contains(&format!("pod/{pod}")), "{backoff}");
@@ -175,7 +175,9 @@ fn a_misspelled_fix_changes_nothing_for_the_better() {
         2,
         "the old pod must stay until a healthy replacement exists: {rows:?}"
     );
-    assert!(rows.iter().all(|r| r[2] == "CrashLoopBackOff"), "{rows:?}");
+    // Neither ever becomes ready (a crashing pod shows `Running 0/1` for the second after each
+    // restart, so the status alone depends on the instant it is sampled).
+    assert!(rows.iter().all(|r| r[1] == "0/1"), "{rows:?}");
     assert!(rows.iter().any(|r| r[0] == broken));
     assert!(e.eval("kubectl get deploy payments-api").contains("0/1"));
 }
