@@ -48,8 +48,8 @@ pub fn complete(line: &str, store: &ClusterStore) -> Completion {
         candidates: Vec::new(),
     };
 
-    // Quoted or escaped words are left to the user.
-    if word.contains(['\'', '"', '\\']) {
+    // Quoted or escaped words, and anything after a pipe or redirect, are left to the user.
+    if word.contains(['\'', '"', '\\']) || before.contains(['|', '>']) {
         return none;
     }
     let Ok(previous) = shell_split(before) else { return none };

@@ -9,11 +9,10 @@ use crate::apps::AppSet;
 use crate::clock;
 use crate::complete::{complete, Completion};
 use crate::controllers::{self, config::ClusterConfig, Env};
-use crate::exec::execute;
 use crate::judge::{Judge, Status};
 use crate::manifests::{normalize_path, Files};
-use crate::parser::parse;
 use crate::scenario::{load, ScenarioError};
+use crate::shell;
 use crate::store::ClusterStore;
 
 /// Largest single `advance`, in simulated seconds (one day).
@@ -154,28 +153,23 @@ impl Engine {
         self.files.insert(normalize_path(path), contents.to_string());
     }
 
-    /// Evaluate one terminal command line and return the text to print.
+    /// Evaluate one terminal line (a pipeline, see `shell`) and return the text to print.
     /// Never panics: parse errors come back as kubectl-style error strings.
-    pub fn eval(&mut self, cmd: &str) -> String {
-        match parse(cmd) {
-            Ok(command) => {
-                let (out, touched) = execute(
-                    &command,
-                    &Env {
-                        store: &self.store,
-                        config: &self.config,
-                        now: self.now,
-                    },
-                    &self.files,
-                );
-                self.judge.record_command(&command, &touched, &out, self.now);
-                // Commands may have changed desired state; let the cluster react right away.
-                self.reconcile();
-                self.judge.observe(&self.store, self.now);
-                out
-            }
-            Err(err) => err.to_string(),
+    pub fn eval(&mut self, line: &str) -> String {
+        let env = Env {
+            store: &self.store,
+            config: &self.config,
+            now: self.now,
+        };
+        let ran = shell::run(line, &env, &mut self.files);
+        for executed in &ran.executed {
+            self.judge
+                .record_command(&executed.command, &executed.touched, &executed.output, self.now);
         }
+        // Commands may have changed desired state; let the cluster react right away.
+        self.reconcile();
+        self.judge.observe(&self.store, self.now);
+        ran.output
     }
 }
 

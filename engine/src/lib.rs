@@ -19,6 +19,7 @@ mod parser;
 mod patch;
 mod render;
 mod scenario;
+mod shell;
 mod sim;
 mod store;
 

@@ -481,7 +481,7 @@ fn when_matches(when: &When, command: &Command, touched: &[Touched]) -> bool {
 }
 
 /// kubectl reports failures as text; a command that failed does not count as an investigation.
-fn is_error_output(output: &str) -> bool {
+pub(crate) fn is_error_output(output: &str) -> bool {
     output.starts_with("error:")
         || output.starts_with("cat: ")
         || output.starts_with("ls: ")

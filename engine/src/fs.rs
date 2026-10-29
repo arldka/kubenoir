@@ -38,27 +38,52 @@ fn children(files: &Files, dir: &str) -> Vec<String> {
     names
 }
 
-pub fn cat(paths: &[String], files: &Files) -> String {
-    if paths.is_empty() {
-        return "cat: reading from standard input is not available in this terminal".into();
+/// What a built-in printed: bytes for stdout (newlines exact, so pipes carry them) and the
+/// error lines that went to stderr.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Output {
+    pub stdout: String,
+    pub stderr: Vec<String>,
+}
+
+impl Output {
+    /// As the terminal shows it: errors first, then stdout without its final newline.
+    pub fn display(&self) -> String {
+        let out = self.stdout.strip_suffix('\n').unwrap_or(&self.stdout);
+        self.stderr
+            .iter()
+            .map(String::as_str)
+            .chain((!self.stdout.is_empty()).then_some(out))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
-    let mut out = Vec::new();
+}
+
+pub fn cat(paths: &[String], files: &Files) -> Output {
+    let mut out = Output::default();
+    if paths.is_empty() {
+        out.stderr
+            .push("cat: reading from standard input is not available in this terminal".into());
+    }
     for path in paths {
         let k = key(path);
         match files.get(&k) {
-            Some(text) => out.push(text.trim_end_matches('\n').to_string()),
-            None if is_dir(files, &k) => out.push(format!("cat: {path}: Is a directory")),
-            None => out.push(format!("cat: {path}: No such file or directory")),
+            Some(text) => out.stdout.push_str(text),
+            None if is_dir(files, &k) => out.stderr.push(format!("cat: {path}: Is a directory")),
+            None => out.stderr.push(format!("cat: {path}: No such file or directory")),
         }
     }
-    out.join("\n")
+    out
 }
 
-pub fn ls(paths: &[String], files: &Files) -> String {
+pub fn ls(paths: &[String], files: &Files) -> Output {
+    let mut out = Output::default();
     if paths.is_empty() {
-        return children(files, "").join("\n");
+        let names = children(files, "");
+        out.stdout = names.iter().map(|n| format!("{n}\n")).collect();
+        return out;
     }
-    let (mut found, mut dirs, mut errors) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut found, mut dirs) = (Vec::new(), Vec::new());
     for path in paths {
         let k = key(path);
         if files.contains_key(&k) {
@@ -66,11 +91,12 @@ pub fn ls(paths: &[String], files: &Files) -> String {
         } else if is_dir(files, &k) {
             dirs.push((path.clone(), children(files, &k)));
         } else {
-            errors.push(format!("ls: cannot access '{path}': No such file or directory"));
+            out.stderr
+                .push(format!("ls: cannot access '{path}': No such file or directory"));
         }
     }
     let headings = paths.len() > 1;
-    let mut sections = errors;
+    let mut sections = Vec::new();
     if !found.is_empty() {
         sections.push(found.join("\n"));
     }
@@ -82,10 +108,11 @@ pub fn ls(paths: &[String], files: &Files) -> String {
             listing
         });
     }
-    sections
-        .join(if headings { "\n\n" } else { "\n" })
-        .trim_end()
-        .to_string()
+    let text = sections.join(if headings { "\n\n" } else { "\n" });
+    if !text.trim().is_empty() {
+        out.stdout = format!("{}\n", text.trim_end());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -109,35 +136,42 @@ mod tests {
 
     #[test]
     fn ls_lists_directories_by_prefix() {
-        assert_eq!(ls(&[], &files()), "case\nnotes.txt");
-        assert_eq!(ls(&args(&["case"]), &files()), "db\nweb.yaml");
-        assert_eq!(ls(&args(&["./case/"]), &files()), "db\nweb.yaml");
-        assert_eq!(ls(&args(&["."]), &files()), "case\nnotes.txt");
-        assert_eq!(ls(&args(&["notes.txt"]), &files()), "notes.txt");
-        assert_eq!(ls(&[], &Files::new()), "");
+        let ls = |a: &[&str]| super::ls(&args(a), &files()).display();
+        assert_eq!(ls(&[]), "case\nnotes.txt");
+        assert_eq!(ls(&["case"]), "db\nweb.yaml");
+        assert_eq!(ls(&["./case/"]), "db\nweb.yaml");
+        assert_eq!(ls(&["."]), "case\nnotes.txt");
+        assert_eq!(ls(&["notes.txt"]), "notes.txt");
+        assert_eq!(super::ls(&[], &Files::new()), Output::default());
+        assert_eq!(super::ls(&args(&["case"]), &files()).stdout, "db\nweb.yaml\n");
     }
 
     #[test]
     fn ls_with_several_operands_labels_directories() {
         assert_eq!(
-            ls(&args(&["nope", "notes.txt", "case/db", "case"]), &files()),
-            "ls: cannot access 'nope': No such file or directory\n\nnotes.txt\n\ncase/db:\npg.yaml\n\ncase:\ndb\nweb.yaml"
+            super::ls(&args(&["nope", "notes.txt", "case/db", "case"]), &files()).display(),
+            "ls: cannot access 'nope': No such file or directory\nnotes.txt\n\ncase/db:\npg.yaml\n\ncase:\ndb\nweb.yaml"
         );
         assert_eq!(
-            ls(&args(&["nope"]), &files()),
+            super::ls(&args(&["nope"]), &files()).display(),
             "ls: cannot access 'nope': No such file or directory"
         );
     }
 
     #[test]
-    fn cat_prints_files_and_reports_each_failure() {
-        assert_eq!(cat(&args(&["notes.txt"]), &files()), "the butler did it");
+    fn cat_keeps_file_bytes_and_reports_each_failure_on_stderr() {
+        let out = super::cat(&args(&["notes.txt"]), &files());
+        assert_eq!(out.stdout, "the butler did it\n");
+        assert_eq!(out.display(), "the butler did it");
+
+        let out = super::cat(&args(&["./notes.txt", "case", "gone"]), &files());
+        assert_eq!(out.stdout, "the butler did it\n");
         assert_eq!(
-            cat(&args(&["./notes.txt", "case", "gone"]), &files()),
-            "the butler did it\ncat: case: Is a directory\ncat: gone: No such file or directory"
+            out.stderr,
+            ["cat: case: Is a directory", "cat: gone: No such file or directory"]
         );
         assert_eq!(
-            cat(&[], &files()),
+            super::cat(&[], &files()).display(),
             "cat: reading from standard input is not available in this terminal"
         );
     }
