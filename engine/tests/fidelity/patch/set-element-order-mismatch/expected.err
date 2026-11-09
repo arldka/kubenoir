@@ -1,0 +1,5 @@
+The order in patch list:
+[map[image:shop:1.2 name:app]]
+ doesn't match $setElementOrder list:
+[map[name:sidecar]]
+

@@ -1,0 +1,4 @@
+spec:
+  tolerations:
+    - key: gpu
+      operator: Exists

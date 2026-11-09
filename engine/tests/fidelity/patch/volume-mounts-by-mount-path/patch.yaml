@@ -1,0 +1,8 @@
+spec:
+  containers:
+    - name: app
+      volumeMounts:
+        - mountPath: /cache
+          readOnly: true
+        - name: data
+          mountPath: /data

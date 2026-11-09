@@ -75,7 +75,7 @@ fn check(case: &Path, got: Result<Value, String>) -> Option<String> {
     let name = case.strip_prefix(root()).unwrap_or(case).display();
     match (expected(case), got) {
         (Expected::Value(want), Ok(got)) if same(&want, &got) => None,
-        (Expected::Err(want), Err(got)) if want == got => None,
+        (Expected::Err(want), Err(got)) if want == got.trim_end_matches('\n') => None,
         (Expected::Value(want), Ok(got)) => Some(format!(
             "{name}\n--- upstream\n{}--- engine\n{}",
             yaml(&want),

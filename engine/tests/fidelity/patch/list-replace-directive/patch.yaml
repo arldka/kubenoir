@@ -1,0 +1,5 @@
+spec:
+  containers:
+    - $patch: replace
+    - name: only
+      image: only:1

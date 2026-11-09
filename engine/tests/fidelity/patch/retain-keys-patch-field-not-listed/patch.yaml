@@ -1,0 +1,6 @@
+spec:
+  strategy:
+    $retainKeys: [type]
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2

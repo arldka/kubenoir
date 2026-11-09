@@ -1,4 +1,5 @@
-//! `kubectl patch`: strategic merge, JSON merge (RFC 7386) and JSON patch (RFC 6902), applied to
+//! `kubectl patch`: strategic merge (`crate::smp`, ported from upstream), JSON merge (RFC 7386)
+//! and JSON patch (RFC 6902), applied to
 //! the stored object and written back through the API server's update path, so a patch is
 //! validated exactly like `apply` or `replace` (pod immutability included).
 
@@ -9,6 +10,7 @@ use crate::controllers::Env;
 use crate::judge::Touched;
 use crate::parser::{PatchArgs, PatchType};
 use crate::scenario::DEFAULT_NAMESPACE;
+use crate::smp;
 use crate::store::StoreError;
 
 pub fn patch(args: &PatchArgs, env: &Env<'_>) -> Result<(String, Vec<Touched>), StoreError> {
@@ -42,8 +44,13 @@ pub fn patch(args: &PatchArgs, env: &Env<'_>) -> Result<(String, Vec<Touched>), 
             if !body.is_object() {
                 Err("error: unable to parse patch: a strategic merge patch must be an object".to_string())
             } else {
-                strategic_merge(&mut patched, &body);
-                Ok(())
+                match smp::strategic_merge_patch(&live, &body) {
+                    Ok(merged) => {
+                        patched = merged;
+                        Ok(())
+                    }
+                    Err(message) => Err(server_patch_error(&message)),
+                }
             }
         }
         PatchType::Json => json_patch(&mut patched, &body),
@@ -86,72 +93,13 @@ pub fn merge_patch(target: &mut Value, patch: &Value) {
     }
 }
 
-/// The key list items are merged by in a strategic merge patch, by the list's field name (and,
-/// for `ports`, by what the items hold: container ports vs Service ports).
-fn merge_key(field: &str, items: &[Value]) -> Option<&'static str> {
-    match field {
-        "containers" | "initContainers" | "ephemeralContainers" | "env" | "volumes" | "imagePullSecrets" => {
-            Some("name")
-        }
-        "volumeMounts" | "volumeDevices" => Some("mountPath"),
-        "ports" if items.iter().any(|p| p.get("containerPort").is_some()) => Some("containerPort"),
-        "ports" => Some("port"),
-        _ => None,
-    }
-}
-
-/// Kubernetes' strategic merge patch: like a JSON merge patch, except that lists with a merge key
-/// (containers by name, env by name, ...) are merged item by item, and an item with
-/// `$patch: delete` is removed.
-pub fn strategic_merge(target: &mut Value, patch: &Value) {
-    let Value::Object(fields) = patch else {
-        *target = patch.clone();
-        return;
-    };
-    if !target.is_object() {
-        *target = Value::Object(Map::new());
-    }
-    let target = target.as_object_mut().expect("just made an object");
-    for (key, value) in fields {
-        if key.starts_with("$setElementOrder/") || key == "$retainKeys" {
-            continue;
-        }
-        match value {
-            Value::Null => {
-                target.remove(key);
-            }
-            Value::Array(items) => match merge_key(key, items) {
-                Some(merge_key) => {
-                    let existing = target.entry(key.clone()).or_insert_with(|| Value::Array(Vec::new()));
-                    merge_list(existing, items, merge_key);
-                }
-                None => {
-                    target.insert(key.clone(), value.clone());
-                }
-            },
-            _ => strategic_merge(target.entry(key.clone()).or_insert(Value::Null), value),
-        }
-    }
-}
-
-fn merge_list(existing: &mut Value, items: &[Value], merge_key: &str) {
-    if !existing.is_array() {
-        *existing = Value::Array(Vec::new());
-    }
-    let list = existing.as_array_mut().expect("just made an array");
-    for item in items {
-        let key = &item[merge_key];
-        let position = list.iter().position(|e| &e[merge_key] == key);
-        if item.get("$patch").and_then(Value::as_str) == Some("delete") {
-            if let Some(i) = position {
-                list.remove(i);
-            }
-            continue;
-        }
-        match position {
-            Some(i) => strategic_merge(&mut list[i], item),
-            None => list.push(item.clone()),
-        }
+/// How kubectl prints a strategic merge patch error the API server returned: the errors it
+/// classifies as bad requests carry that reason, the rest reach kubectl without one.
+fn server_patch_error(message: &str) -> String {
+    if smp::is_bad_request(message) {
+        format!("Error from server (BadRequest): {message}")
+    } else {
+        format!("Error from server: {message}")
     }
 }
 
@@ -282,44 +230,6 @@ mod tests {
         let mut doc = json!({"a": {"b": 1, "c": 2}, "list": [1, 2]});
         merge_patch(&mut doc, &json!({"a": {"b": null, "d": 3}, "list": [9]}));
         assert_eq!(doc, json!({"a": {"c": 2, "d": 3}, "list": [9]}));
-    }
-
-    #[test]
-    fn strategic_merge_merges_containers_and_env_by_name() {
-        let mut doc = json!({"spec": {"containers": [
-            {"name": "app", "image": "app:1", "env": [{"name": "A", "value": "1"}, {"name": "B", "value": "2"}]},
-            {"name": "side", "image": "side:1"}
-        ]}});
-        strategic_merge(
-            &mut doc,
-            &json!({"spec": {"containers": [
-                {"name": "app", "env": [{"name": "B", "value": "two"}, {"name": "C", "value": "3"}, {"name": "A", "$patch": "delete"}]}
-            ]}}),
-        );
-        assert_eq!(
-            doc,
-            json!({"spec": {"containers": [
-                {"name": "app", "image": "app:1", "env": [{"name": "B", "value": "two"}, {"name": "C", "value": "3"}]},
-                {"name": "side", "image": "side:1"}
-            ]}})
-        );
-    }
-
-    #[test]
-    fn strategic_merge_picks_the_port_key_from_the_items() {
-        let mut service = json!({"ports": [{"port": 80, "targetPort": 8080}, {"port": 443}]});
-        strategic_merge(&mut service, &json!({"ports": [{"port": 80, "targetPort": 3000}]}));
-        assert_eq!(
-            service["ports"],
-            json!([{"port": 80, "targetPort": 3000}, {"port": 443}])
-        );
-
-        let mut container = json!({"ports": [{"containerPort": 80, "name": "http"}]});
-        strategic_merge(
-            &mut container,
-            &json!({"ports": [{"containerPort": 80, "name": "web"}]}),
-        );
-        assert_eq!(container["ports"], json!([{"containerPort": 80, "name": "web"}]));
     }
 
     #[test]

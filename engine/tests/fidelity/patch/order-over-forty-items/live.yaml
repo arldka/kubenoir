@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: big
+spec:
+  containers:
+    - name: app
+      image: app:1
+      env:
+        - name: V00
+          value: "0"
+        - name: V01
+          value: "1"
+        - name: V02
+          value: "2"
+        - name: V03
+          value: "3"
+        - name: V04
+          value: "4"
+        - name: V05
+          value: "5"
+        - name: V06
+          value: "6"
+        - name: V07
+          value: "7"
+        - name: V08
+          value: "8"
+        - name: V09
+          value: "9"
+        - name: V10
+          value: "10"
+        - name: V11
+          value: "11"
+        - name: V12
+          value: "12"
+        - name: V13
+          value: "13"
+        - name: V14
+          value: "14"
+        - name: V15
+          value: "15"
+        - name: V16
+          value: "16"
+        - name: V17
+          value: "17"
+        - name: V18
+          value: "18"
+        - name: V19
+          value: "19"
+        - name: V20
+          value: "20"
+        - name: V21
+          value: "21"
+        - name: V22
+          value: "22"
+        - name: V23
+          value: "23"
+        - name: V24
+          value: "24"
+        - name: V25
+          value: "25"
+        - name: V26
+          value: "26"
+        - name: V27
+          value: "27"
+        - name: V28
+          value: "28"
+        - name: V29
+          value: "29"
+        - name: V30
+          value: "30"
+        - name: V31
+          value: "31"
+        - name: V32
+          value: "32"
+        - name: V33
+          value: "33"
+        - name: V34
+          value: "34"
+        - name: V35
+          value: "35"
+        - name: V36
+          value: "36"
+        - name: V37
+          value: "37"
+        - name: V38
+          value: "38"
+        - name: V39
+          value: "39"
+        - name: V40
+          value: "40"
+        - name: V41
+          value: "41"
+        - name: V42
+          value: "42"
+        - name: V43
+          value: "43"
+        - name: V44
+          value: "44"

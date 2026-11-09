@@ -1,0 +1,56 @@
+spec:
+  containers:
+    - name: app
+      env:
+        - name: V44
+          value: p44
+        - name: V43
+          value: p43
+        - name: V42
+          value: p42
+        - name: V41
+          value: p41
+        - name: V40
+          value: p40
+        - name: V39
+          value: p39
+        - name: V38
+          value: p38
+        - name: V37
+          value: p37
+        - name: V36
+          value: p36
+        - name: V35
+          value: p35
+        - name: V34
+          value: p34
+        - name: V33
+          value: p33
+        - name: V32
+          value: p32
+        - name: V31
+          value: p31
+        - name: V30
+          value: p30
+        - name: V29
+          value: p29
+        - name: V28
+          value: p28
+        - name: V27
+          value: p27
+        - name: V26
+          value: p26
+        - name: V25
+          value: p25
+        - name: V24
+          value: p24
+        - name: V23
+          value: p23
+        - name: V22
+          value: p22
+        - name: V21
+          value: p21
+        - name: V50
+          value: p50
+        - name: V51
+          value: p51

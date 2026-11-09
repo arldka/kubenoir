@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: odd
+spec:
+  bogus:
+    a: 1
+  containers:
+    - name: app
+      image: a:1

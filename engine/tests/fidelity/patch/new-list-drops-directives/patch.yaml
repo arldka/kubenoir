@@ -1,0 +1,6 @@
+spec:
+  initContainers:
+    - name: init
+      image: busybox
+    - name: gone
+      $patch: delete

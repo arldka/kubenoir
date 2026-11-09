@@ -75,14 +75,18 @@ e2e: $(WASM) registry ## Play the game in a real browser (Playwright)
 # Upstream fidelity: `oracle/` (Go, never shipped) runs upstream Kubernetes on the cases in
 # engine/tests/fidelity and writes the expected outputs the engine is tested against.
 FIDELITY := engine/tests/fidelity
+# Generated from upstream's struct tags; checked in so the engine builds without Go.
+PATCHMETA := engine/src/patchmeta.rs
+GENERATED := $(FIDELITY) $(PATCHMETA)
 
 oracle-goldens: ## Regenerate the upstream fidelity goldens (needs Go)
 	@command -v go >/dev/null || { echo "oracle-goldens needs Go (version in oracle/go.mod)"; exit 1; }
 	cd oracle && go vet ./... && go run ./cmd/kubeoracle goldens ../$(FIDELITY)
+	cd oracle && go run ./cmd/kubeoracle patchmeta ../$(PATCHMETA)
 
 fidelity: oracle-goldens ## Fail if the checked-in fidelity goldens are not what upstream produces
-	@git diff --exit-code -- $(FIDELITY) || { echo "goldens are stale: run make oracle-goldens and review the diff"; exit 1; }
-	@test -z "$$(git status --porcelain --untracked-files=all -- $(FIDELITY))" || { git status --short -- $(FIDELITY); echo "untracked goldens: git add them"; exit 1; }
+	@git diff --exit-code -- $(GENERATED) || { echo "goldens are stale: run make oracle-goldens and review the diff"; exit 1; }
+	@test -z "$$(git status --porcelain --untracked-files=all -- $(GENERATED))" || { git status --short -- $(GENERATED); echo "untracked goldens: git add them"; exit 1; }
 
 ci: lint test fidelity check build e2e ## Everything CI runs
 

@@ -1,0 +1,8 @@
+spec:
+  containers:
+    - name: sidecar
+      image: proxy:3
+    - name: logger
+      image: log:1
+    - name: app
+      image: shop:2

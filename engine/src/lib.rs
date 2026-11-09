@@ -27,11 +27,13 @@ mod names;
 mod net;
 mod parser;
 mod patch;
+mod patchmeta;
 mod render;
 mod scenario;
 mod selector;
 mod shell;
 mod sim;
+mod smp;
 mod store;
 
 pub use apps::AppSet;

@@ -1,0 +1,18 @@
+spec:
+  containers:
+    - name: app
+      env:
+        - name: V24
+          value: changed
+        - name: V03
+          value: changed
+        - name: V17
+          value: changed
+        - name: V00
+          value: changed
+        - name: V11
+          value: changed
+        - name: NEW1
+          value: x
+        - name: V05
+          $patch: delete

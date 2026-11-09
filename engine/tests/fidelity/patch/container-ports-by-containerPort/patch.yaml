@@ -1,0 +1,8 @@
+spec:
+  containers:
+    - name: app
+      ports:
+        - containerPort: 8080
+          name: web
+        - containerPort: 9090
+          name: metrics

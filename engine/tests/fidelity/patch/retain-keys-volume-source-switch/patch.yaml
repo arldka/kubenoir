@@ -1,0 +1,6 @@
+spec:
+  volumes:
+    - name: cache
+      $retainKeys: [name, configMap]
+      configMap:
+        name: settings

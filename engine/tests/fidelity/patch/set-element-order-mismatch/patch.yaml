@@ -1,0 +1,6 @@
+spec:
+  $setElementOrder/containers:
+    - name: sidecar
+  containers:
+    - name: app
+      image: shop:1.2

@@ -11,8 +11,7 @@ fn parse(what: &str, text: &str) -> Result<Value, String> {
 /// `live` patched with `patch` as a strategic merge patch (`kubectl patch`'s default type).
 /// `Err` is the patch error's text.
 pub fn strategic_merge(live: &str, patch: &str) -> Result<Value, String> {
-    let mut live = parse("live object", live)?;
+    let live = parse("live object", live)?;
     let patch = parse("patch", patch)?;
-    crate::patch::strategic_merge(&mut live, &patch);
-    Ok(live)
+    crate::smp::strategic_merge_patch(&live, &patch)
 }

@@ -1,0 +1,10 @@
+spec:
+  containers:
+    - name: app
+      env:
+        - name: B
+          value: two
+        - name: C
+          value: "3"
+        - name: A
+          $patch: delete

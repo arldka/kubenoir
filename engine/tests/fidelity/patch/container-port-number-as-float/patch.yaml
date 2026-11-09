@@ -1,0 +1,6 @@
+spec:
+  containers:
+    - name: app
+      ports:
+        - containerPort: 8080.0
+          name: web

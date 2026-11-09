@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: big
+spec:
+  containers:
+    - name: app
+      image: app:1
+      env:
+        - name: V00
+          value: "0"
+        - name: V01
+          value: "1"
+        - name: V02
+          value: "2"
+        - name: V03
+          value: "3"
+        - name: V04
+          value: "4"
+        - name: V05
+          value: "5"
+        - name: V06
+          value: "6"
+        - name: V07
+          value: "7"
+        - name: V08
+          value: "8"
+        - name: V09
+          value: "9"
+        - name: V10
+          value: "10"
+        - name: V11
+          value: "11"
+        - name: V12
+          value: "12"
+        - name: V13
+          value: "13"
+        - name: V14
+          value: "14"
+        - name: V15
+          value: "15"
+        - name: V16
+          value: "16"
+        - name: V17
+          value: "17"
+        - name: V18
+          value: "18"
+        - name: V19
+          value: "19"
+        - name: V20
+          value: "20"
+        - name: V21
+          value: "21"
+        - name: V22
+          value: "22"
+        - name: V23
+          value: "23"
+        - name: V24
+          value: "24"

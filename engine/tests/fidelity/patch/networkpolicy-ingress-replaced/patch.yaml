@@ -1,0 +1,4 @@
+spec:
+  ingress:
+    - from:
+        - namespaceSelector: {}

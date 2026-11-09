@@ -138,7 +138,7 @@ T31|x|pilot #20 Out of Jurisdiction (cross-ns DNS; FQDN \| ExternalName both pas
 T32|x|Job + CronJob controllers, cron parser, time-skip|V17
 T34|x|docs: update `docs/scenario-format.md` (schemaVersion `2`, manifests), `docs/registry.md` (dir layout, replay ⊥ score verification), `docs/apps.md`, `CLAUDE.md` networking & scoring bullets|C3,C6,C11,I.docs
 T40|x|`oracle/` Go module + `kubeoracle` skeleton, case-dir walker, `make oracle-goldens`, CI `fidelity` job, Rust fidelity harness (`engine/tests/fidelity.rs`, canonical YAML/JSON diff)|C16,C17,I.oracle,I.fidelity,I.make,V33
-T41|.|patch meta: `kubeoracle patchmeta` → `engine/src/patchmeta.rs`; rewrite `strategic_merge` on it + directives; port upstream SMP cases into fidelity/patch|V34,I.engine,C18
+T41|x|patch meta: `kubeoracle patchmeta` → `engine/src/patchmeta.rs`; rewrite `strategic_merge` on it + directives; port upstream SMP cases into fidelity/patch|V34,I.engine,C18
 T42|.|apply 3-way merge on T41; fidelity/apply cases (removed field, foreign field kept, unchanged)|V35,V4,I.engine
 T43|.|defaulting port ∀ C18 kinds; fidelity/defaults (manifest → stored `-o yaml`)|V36,V2,C18
 T44|.|validation port ∀ C18 kinds (create + update, incl. pod update rules V3); fidelity/validate error texts|V37,V3,V1,C8
