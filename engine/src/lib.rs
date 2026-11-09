@@ -8,11 +8,14 @@ mod complete;
 mod container_exec;
 mod controllers;
 mod cron;
+mod defaults;
 mod describe;
 mod events;
 mod exec;
 mod explain;
 mod fs;
+mod gojson;
+mod gotypes;
 // Upstream-fidelity entry points for `tests/fidelity.rs`; not part of the engine's API.
 #[doc(hidden)]
 pub mod fidelity;
@@ -27,7 +30,7 @@ mod names;
 mod net;
 mod parser;
 mod patch;
-mod patchmeta;
+mod quantity;
 mod render;
 mod scenario;
 mod selector;

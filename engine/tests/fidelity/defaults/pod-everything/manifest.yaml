@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: Pod
+metadata: {name: full, namespace: default, labels: {app: full}}
+spec:
+  hostNetwork: true
+  initContainers:
+    - name: init
+      image: busybox
+      command: [sh, -c, "true"]
+  containers:
+    - name: app
+      image: registry.local:5000/team/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      ports:
+        - containerPort: 8080
+        - containerPort: 9090
+          protocol: UDP
+      env:
+        - name: POD_NAME
+          valueFrom: {fieldRef: {fieldPath: metadata.name}}
+        - name: LIMIT
+          valueFrom: {resourceFieldRef: {resource: limits.memory}}
+      resources:
+        requests: {cpu: "0.0001", memory: "1000000"}
+        limits: {memory: 2Gi}
+      livenessProbe:
+        tcpSocket: {port: 8080}
+        periodSeconds: 5
+      startupProbe:
+        grpc: {port: 9090}
+      lifecycle:
+        preStop:
+          httpGet: {port: 8080, path: /drain}
+    - name: latest
+      image: nginx:latest
+  volumes:
+    - name: scratch
+    - name: cfg
+      configMap: {name: settings}
+    - name: creds
+      secret: {secretName: creds, defaultMode: 256}
+    - name: host
+      hostPath: {path: /var/log}
+    - name: info
+      downwardAPI:
+        items:
+          - path: labels
+            fieldRef: {fieldPath: metadata.labels}
+    - name: token
+      projected:
+        sources:
+          - serviceAccountToken: {path: token}
+          - downwardAPI:
+              items:
+                - path: name
+                  fieldRef: {fieldPath: metadata.name}
+    - name: limited
+      emptyDir: {sizeLimit: "0.5Gi"}

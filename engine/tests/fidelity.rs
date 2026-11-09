@@ -121,3 +121,10 @@ fn apply_matches_upstream() {
         engine::fidelity::apply(&read(case, "live.yaml"), &read(case, "manifest.yaml"))
     });
 }
+
+#[test]
+fn defaults_match_upstream() {
+    run_area("defaults", |case| {
+        engine::fidelity::defaults(&read(case, "manifest.yaml"))
+    });
+}

@@ -1,0 +1,13 @@
+apiVersion: batch/v1
+kind: Job
+metadata: {name: crunch, namespace: default, labels: {team: data}}
+spec:
+  parallelism: 4
+  podFailurePolicy:
+    rules:
+      - action: Ignore
+        onPodConditions: [{type: DisruptionTarget}]
+  template:
+    spec:
+      restartPolicy: Never
+      containers: [{name: run, image: crunch:1}]

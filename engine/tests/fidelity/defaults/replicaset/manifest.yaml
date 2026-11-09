@@ -1,0 +1,9 @@
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata: {name: shop-abc, namespace: default}
+spec:
+  selector: {matchLabels: {app: shop}}
+  template:
+    metadata: {labels: {app: shop}}
+    spec:
+      containers: [{name: app, image: shop:1.0}]

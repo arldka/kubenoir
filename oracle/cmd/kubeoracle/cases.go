@@ -18,8 +18,9 @@ import (
 type area func(c *caseDir) error
 
 var areas = map[string]area{
-	"patch": patchCase,
-	"apply": applyCase,
+	"patch":    patchCase,
+	"apply":    applyCase,
+	"defaults": defaultsCase,
 }
 
 // goldens runs every case of every area under root (`<root>/<area>/<case>/`). Expected files

@@ -1,13 +1,19 @@
 package main
 
 import (
+	"encoding"
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
 	"runtime/debug"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
@@ -29,34 +35,71 @@ var simulatedKinds = []schema.GroupVersionKind{
 	{Version: "v1", Kind: "Service"},
 }
 
-// A node of the type graph strategic merge patch walks: what upstream's PatchMetaFromStruct
-// reads from Go types by reflection, written out as data for the engine.
-type metaNode struct {
-	goKind string // reflect.Kind name: "struct", "slice", "map", "ptr", "string", ...
-	name   string // struct type name, for error texts
-	elem   int    // slice, map, ptr: element node
-	fields []metaField
+// Types that encode themselves (json.Marshaler) and how the engine writes them.
+var marshalers = map[reflect.Type]string{
+	reflect.TypeOf(resource.Quantity{}):    "Quantity",
+	reflect.TypeOf(metav1.Time{}):          "Time",
+	reflect.TypeOf(metav1.MicroTime{}):     "Time",
+	reflect.TypeOf(intstr.IntOrString{}):   "IntOrString",
+	reflect.TypeOf(runtime.RawExtension{}): "Raw",
+	reflect.TypeOf(metav1.FieldsV1{}):      "Raw",
+	reflect.TypeOf(json.RawMessage{}):      "Raw",
 }
 
-type metaField struct {
+var (
+	jsonMarshaler = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	textMarshaler = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+)
+
+// A node of the Go type graph reachable from the simulated kinds: what upstream's strategic
+// merge patch reads by reflection (`patchStrategy`, `patchMergeKey`), and what encoding/json
+// needs to write an object the way the API server stores it (omitempty / omitzero, types
+// that marshal themselves).
+type typeNode struct {
+	goKind    string // reflect.Kind name: "struct", "slice", "map", "ptr", "string", ...
+	name      string // struct type name, for error texts
+	elem      int    // slice, map, ptr: element node
+	marshaler string // a type that encodes itself: "Quantity", "Time", ...
+	fields    []typeField
+}
+
+type typeField struct {
 	json       string
 	strategies string // the `patchStrategy` tag as written, e.g. "merge,retainKeys"
 	mergeKey   string // the `patchMergeKey` tag
+	omitEmpty  bool
+	omitZero   bool
 	node       int
 }
 
-type metaGraph struct {
-	nodes []metaNode
+type typeGraph struct {
+	nodes []typeNode
 	index map[reflect.Type]int
+	err   error
 }
 
-func (g *metaGraph) add(t reflect.Type) int {
+func (g *typeGraph) add(t reflect.Type) int {
 	if i, ok := g.index[t]; ok {
 		return i
 	}
 	i := len(g.nodes)
 	g.index[t] = i
-	g.nodes = append(g.nodes, metaNode{goKind: t.Kind().String(), name: t.Name()})
+	g.nodes = append(g.nodes, typeNode{goKind: t.Kind().String(), name: t.Name()})
+	if m, ok := marshalers[t]; ok {
+		g.nodes[i].marshaler = m
+		return i
+	}
+	if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+		g.nodes[i].marshaler = "Bytes"
+		return i
+	}
+	if t.Kind() != reflect.Pointer && (reflect.PointerTo(t).Implements(jsonMarshaler) || reflect.PointerTo(t).Implements(textMarshaler)) {
+		// A type that encodes itself in a way the engine does not know: fail rather than
+		// write it wrongly.
+		if g.err == nil {
+			g.err = fmt.Errorf("%s encodes itself (MarshalJSON/MarshalText); add it to marshalers", t)
+		}
+	}
 	switch t.Kind() {
 	case reflect.Slice, reflect.Array, reflect.Map, reflect.Pointer:
 		elem := g.add(t.Elem())
@@ -71,8 +114,8 @@ func (g *metaGraph) add(t reflect.Type) int {
 // structFields lists a struct's JSON fields the way encoding/json (and upstream's forked copy
 // that strategic merge patch uses) sees them: in field order, embedded structs without a JSON
 // name flattened in place, `json:"-"` and unexported fields skipped.
-func (g *metaGraph) structFields(t reflect.Type) []metaField {
-	var out []metaField
+func (g *typeGraph) structFields(t reflect.Type) []typeField {
+	var out []typeField
 	seen := map[string]bool{}
 	var walk func(t reflect.Type)
 	walk = func(t reflect.Type) {
@@ -82,7 +125,7 @@ func (g *metaGraph) structFields(t reflect.Type) []metaField {
 			if tag == "-" {
 				continue
 			}
-			name, _, _ := strings.Cut(tag, ",")
+			name, opts, _ := strings.Cut(tag, ",")
 			ft := f.Type
 			if f.Anonymous && name == "" {
 				if ft.Kind() == reflect.Pointer {
@@ -105,10 +148,13 @@ func (g *metaGraph) structFields(t reflect.Type) []metaField {
 				continue
 			}
 			seen[name] = true
-			out = append(out, metaField{
+			options := "," + opts + ","
+			out = append(out, typeField{
 				json:       name,
 				strategies: f.Tag.Get("patchStrategy"),
 				mergeKey:   f.Tag.Get("patchMergeKey"),
+				omitEmpty:  strings.Contains(options, ",omitempty,"),
+				omitZero:   strings.Contains(options, ",omitzero,"),
 				node:       g.add(f.Type),
 			})
 		}
@@ -117,9 +163,9 @@ func (g *metaGraph) structFields(t reflect.Type) []metaField {
 	return out
 }
 
-// patchmeta writes the engine's strategic-merge-patch metadata (engine/src/patchmeta.rs).
-func patchmeta(out string) error {
-	g := &metaGraph{index: map[reflect.Type]int{}}
+// gotypes writes the engine's Go type graph (engine/src/gotypes.rs).
+func gotypes(out string) error {
+	g := &typeGraph{index: map[reflect.Type]int{}}
 	type root struct {
 		apiVersion, kind string
 		node             int
@@ -133,12 +179,16 @@ func patchmeta(out string) error {
 		apiVersion, kind := gvk.ToAPIVersionAndKind()
 		roots = append(roots, root{apiVersion, kind, g.add(reflect.TypeOf(obj).Elem())})
 	}
+	if g.err != nil {
+		return g.err
+	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "// @generated by `kubeoracle patchmeta` (make oracle-goldens) from k8s.io/api %s.\n", moduleVersion("k8s.io/api"))
-	b.WriteString("// Do not edit. The struct tags (`patchStrategy`, `patchMergeKey`) strategic merge patch reads\n")
-	b.WriteString("// by reflection upstream, for every type reachable from the simulated kinds.\n\n")
-	b.WriteString("use crate::smp::{Field, Node};\n\n")
+	fmt.Fprintf(&b, "// @generated by `kubeoracle gotypes` (make oracle-goldens) from k8s.io/api %s.\n", moduleVersion("k8s.io/api"))
+	b.WriteString("// Do not edit. The Go types reachable from the simulated kinds, as upstream sees them by\n")
+	b.WriteString("// reflection: strategic merge patch's struct tags (`patchStrategy`, `patchMergeKey`) and\n")
+	b.WriteString("// encoding/json's field options (`omitempty`, `omitzero`) and self-encoding types.\n\n")
+	b.WriteString("use crate::gojson::{Field, Marshal, Node};\n\n")
 	b.WriteString("/// `(apiVersion, kind)` → its node in [`NODES`].\n")
 	b.WriteString("#[rustfmt::skip]\n")
 	b.WriteString("pub static ROOTS: &[(&str, &str, u16)] = &[\n")
@@ -149,19 +199,21 @@ func patchmeta(out string) error {
 	b.WriteString("#[rustfmt::skip]\n")
 	b.WriteString("pub static NODES: &[Node] = &[\n")
 	for i, n := range g.nodes {
-		switch n.goKind {
-		case "struct":
+		switch {
+		case n.marshaler != "":
+			fmt.Fprintf(&b, "    /* %d */ Node::Marshal { go_kind: %q, name: %q, marshal: Marshal::%s },\n", i, n.goKind, n.name, n.marshaler)
+		case n.goKind == "struct":
 			fmt.Fprintf(&b, "    /* %d */ Node::Struct { name: %q, fields: &[\n", i, n.name)
 			for _, f := range n.fields {
-				fmt.Fprintf(&b, "        Field { json: %q, strategies: %q, merge_key: %q, node: %d },\n",
-					f.json, f.strategies, f.mergeKey, f.node)
+				fmt.Fprintf(&b, "        Field { json: %q, strategies: %q, merge_key: %q, omit_empty: %t, omit_zero: %t, node: %d },\n",
+					f.json, f.strategies, f.mergeKey, f.omitEmpty, f.omitZero, f.node)
 			}
 			b.WriteString("    ] },\n")
-		case "slice", "array":
+		case n.goKind == "slice" || n.goKind == "array":
 			fmt.Fprintf(&b, "    /* %d */ Node::Slice(%d),\n", i, n.elem)
-		case "map":
-			fmt.Fprintf(&b, "    /* %d */ Node::Map,\n", i)
-		case "ptr":
+		case n.goKind == "map":
+			fmt.Fprintf(&b, "    /* %d */ Node::Map(%d),\n", i, n.elem)
+		case n.goKind == "ptr":
 			fmt.Fprintf(&b, "    /* %d */ Node::Ptr(%d),\n", i, n.elem)
 		default:
 			fmt.Fprintf(&b, "    /* %d */ Node::Scalar(%q),\n", i, n.goKind)

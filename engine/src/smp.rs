@@ -6,7 +6,7 @@
 //! port against upstream itself (SPEC V33, V34).
 //!
 //! Where upstream reads `patchStrategy` / `patchMergeKey` struct tags by reflection, the port
-//! reads the same tags from [`crate::patchmeta`], generated from upstream's Go types.
+//! reads the same tags from [`crate::gotypes`], generated from upstream's Go types.
 //!
 //! Go semantics kept on purpose: JSON numbers are float64 (`1` equals `1.0`), interface equality
 //! (`==`) for merge keys and scalars, `%v` formatting of values in error texts, and
@@ -15,7 +15,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::patchmeta::{NODES, ROOTS};
+use crate::gojson::{self, Node};
 
 type JsonMap = Map<String, Value>;
 
@@ -48,29 +48,7 @@ pub fn is_bad_request(message: &str) -> bool {
     .contains(&message)
 }
 
-// ---- the type graph (`patchmeta.rs`) ----
-
-/// A Go type strategic merge patch can meet, as upstream's reflection sees it.
-pub enum Node {
-    Struct {
-        name: &'static str,
-        fields: &'static [Field],
-    },
-    Slice(u16),
-    /// Upstream never looks into a map's element type: merging into one fails if it would.
-    Map,
-    Ptr(u16),
-    /// Any other Go kind (`string`, `int32`, `bool`, ...), by its `reflect.Kind` name.
-    Scalar(&'static str),
-}
-
-/// A struct field: its JSON name and its `patchStrategy` / `patchMergeKey` tags.
-pub struct Field {
-    pub json: &'static str,
-    pub strategies: &'static str,
-    pub merge_key: &'static str,
-    pub node: u16,
-}
+// ---- the type graph (`crate::gotypes`) ----
 
 /// `PatchMetaFromStruct`: a position in the type graph.
 #[derive(Clone, Copy)]
@@ -83,7 +61,7 @@ struct PatchMeta {
 
 impl Schema {
     fn node(self) -> &'static Node {
-        &NODES[self.0 as usize]
+        gojson::node(self.0)
     }
 
     /// `reflect.Kind.String()` of the type.
@@ -91,9 +69,10 @@ impl Schema {
         match self.node() {
             Node::Struct { .. } => "struct",
             Node::Slice(_) => "slice",
-            Node::Map => "map",
+            Node::Map(_) => "map",
             Node::Ptr(_) => "ptr",
             Node::Scalar(kind) => kind,
+            Node::Marshal { go_kind, .. } => go_kind,
         }
     }
 
@@ -103,11 +82,20 @@ impl Schema {
         if let Node::Ptr(elem) = t.node() {
             t = Schema(*elem);
         }
-        let Node::Struct { name, fields } = t.node() else {
-            return Err(format!(
-                "merging an object in json but data type is not struct, instead is: {}",
-                t.name()
-            ));
+        let (name, fields): (&str, &[gojson::Field]) = match t.node() {
+            Node::Struct { name, fields } => (name, fields),
+            // A struct that encodes itself (Quantity, Time, ...) has no JSON fields to merge.
+            Node::Marshal {
+                go_kind: "struct",
+                name,
+                ..
+            } => (name, &[]),
+            _ => {
+                return Err(format!(
+                    "merging an object in json but data type is not struct, instead is: {}",
+                    t.name()
+                ))
+            }
         };
         // An exact match wins; otherwise the first case-insensitive one.
         let field = fields
@@ -140,8 +128,8 @@ impl Schema {
                 }
                 elem
             }
-            Node::Ptr(elem) => match NODES[*elem as usize] {
-                Node::Slice(inner) => Schema(inner),
+            Node::Ptr(elem) => match gojson::node(*elem) {
+                Node::Slice(inner) => Schema(*inner),
                 _ => Schema(*elem),
             },
             _ => return Err(format!("expected slice or array type, but got: {}", self.name())),
@@ -151,10 +139,7 @@ impl Schema {
 }
 
 fn root(api_version: &str, kind: &str) -> Option<Schema> {
-    ROOTS
-        .iter()
-        .find(|(v, k, _)| *v == api_version && *k == kind)
-        .map(|(_, _, node)| Schema(*node))
+    gojson::root(api_version, kind).map(Schema)
 }
 
 #[derive(Clone, Copy)]

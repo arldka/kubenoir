@@ -564,7 +564,7 @@ fn ensure_namespace(store: &ClusterStore, info: &KindInfo, namespace: &str) -> R
 
 /// Resolve the kind and decode strictly: the object as the server keeps it, with
 /// `metadata.namespace` set for namespaced kinds and removed for cluster-scoped ones.
-fn admit(manifest: &Value, namespace: &str) -> Result<(&'static KindInfo, Value), ApiError> {
+pub(crate) fn admit(manifest: &Value, namespace: &str) -> Result<(&'static KindInfo, Value), ApiError> {
     let kind = manifest.get("kind").and_then(Value::as_str).unwrap_or_default();
     let api_version = manifest.get("apiVersion").and_then(Value::as_str).unwrap_or_default();
     if kind.is_empty() || api_version.is_empty() {
@@ -909,60 +909,18 @@ fn set_default(fields: &mut Map<String, Value>, key: &str, value: Value) {
     fields.entry(key).or_insert(value);
 }
 
+/// What the API server does to an object before validating and storing it: the upstream
+/// defaulters (`crate::defaults`), then the rest of the server's own changes that are not
+/// defaulting: Secret `stringData` folded into `data` (conversion), a new Namespace's
+/// `kubernetes` finalizer (create strategy), and a simulated Node's kubelet status.
 fn apply_defaults(info: &KindInfo, name: &str, object: &mut Value) {
+    let _ = name;
+    crate::defaults::set_object_defaults(info.kind, object);
     match info.kind {
-        "Pod" => default_pod_spec(&mut object["spec"]),
-        "Deployment" => {
-            let spec = obj(&mut object["spec"]);
-            set_default(spec, "replicas", json!(1));
-            set_default(spec, "revisionHistoryLimit", json!(10));
-            set_default(spec, "progressDeadlineSeconds", json!(600));
-            let strategy = obj(spec.entry("strategy").or_insert_with(|| json!({})));
-            set_default(strategy, "type", json!("RollingUpdate"));
-            if strategy["type"] == "RollingUpdate" {
-                let rolling = obj(strategy.entry("rollingUpdate").or_insert_with(|| json!({})));
-                set_default(rolling, "maxSurge", json!("25%"));
-                set_default(rolling, "maxUnavailable", json!("25%"));
-            }
-            default_pod_spec(&mut object["spec"]["template"]["spec"]);
-        }
-        "ReplicaSet" => {
-            set_default(obj(&mut object["spec"]), "replicas", json!(1));
-            default_pod_spec(&mut object["spec"]["template"]["spec"]);
-        }
-        "Job" => default_job(&mut object["spec"]),
-        "CronJob" => {
-            let spec = obj(&mut object["spec"]);
-            set_default(spec, "concurrencyPolicy", json!("Allow"));
-            set_default(spec, "suspend", json!(false));
-            set_default(spec, "successfulJobsHistoryLimit", json!(3));
-            set_default(spec, "failedJobsHistoryLimit", json!(1));
-            default_job(&mut spec.entry("jobTemplate").or_insert_with(|| json!({}))["spec"]);
-        }
-        "Service" => {
-            let spec = obj(&mut object["spec"]);
-            set_default(spec, "type", json!("ClusterIP"));
-            set_default(spec, "sessionAffinity", json!("None"));
-            if let Some(ports) = spec.get_mut("ports").and_then(Value::as_array_mut) {
-                for port in ports {
-                    let port = obj(port);
-                    set_default(port, "protocol", json!("TCP"));
-                    if let Some(number) = port.get("port").cloned() {
-                        set_default(port, "targetPort", number);
-                    }
-                }
-            }
-        }
         "Namespace" => {
-            let labels = obj(obj(&mut object["metadata"])
-                .entry("labels")
-                .or_insert_with(|| json!({})));
-            labels.insert("kubernetes.io/metadata.name".into(), json!(name));
             set_default(obj(&mut object["spec"]), "finalizers", json!(["kubernetes"]));
-            set_default(obj(&mut object["status"]), "phase", json!("Active"));
         }
         "Secret" => {
-            set_default(obj(object), "type", json!("Opaque"));
             // `stringData` is write-only: the API server stores it base64 encoded in `data`, where
             // it wins over an existing key of the same name.
             let strings = object.as_object_mut().and_then(|o| o.remove("stringData"));
@@ -992,6 +950,8 @@ fn apply_defaults(info: &KindInfo, name: &str, object: &mut Value) {
         }
         _ => {}
     }
+    // Stored the way the API server stores it: encoded from its Go type.
+    *object = crate::gojson::encode_object(object);
 }
 
 /// `value` as an object, turning it into an empty one first if it is anything else.
@@ -1000,59 +960,6 @@ fn obj(value: &mut Value) -> &mut Map<String, Value> {
         *value = json!({});
     }
     value.as_object_mut().expect("just made an object")
-}
-
-fn default_job(spec: &mut Value) {
-    let spec = obj(spec);
-    set_default(spec, "completions", json!(1));
-    set_default(spec, "parallelism", json!(1));
-    set_default(spec, "backoffLimit", json!(6));
-    set_default(spec, "completionMode", json!("NonIndexed"));
-    set_default(spec, "suspend", json!(false));
-    if let Some(template) = spec.get_mut("template") {
-        default_pod_spec(&mut template["spec"]);
-    }
-}
-
-fn default_pod_spec(spec: &mut Value) {
-    let spec = obj(spec);
-    set_default(spec, "restartPolicy", json!("Always"));
-    set_default(spec, "dnsPolicy", json!("ClusterFirst"));
-    set_default(spec, "schedulerName", json!("default-scheduler"));
-    set_default(spec, "terminationGracePeriodSeconds", json!(30));
-    set_default(spec, "securityContext", json!({}));
-    for field in ["containers", "initContainers"] {
-        let Some(containers) = spec.get_mut(field).and_then(Value::as_array_mut) else {
-            continue;
-        };
-        for container in containers {
-            let container = obj(container);
-            let image = container.get("image").and_then(Value::as_str).unwrap_or_default();
-            let pull = if image_tag(image).is_none_or(|t| t == "latest") {
-                "Always"
-            } else {
-                "IfNotPresent"
-            };
-            set_default(container, "imagePullPolicy", json!(pull));
-            set_default(container, "terminationMessagePath", json!("/dev/termination-log"));
-            set_default(container, "terminationMessagePolicy", json!("File"));
-            set_default(container, "resources", json!({}));
-            if let Some(ports) = container.get_mut("ports").and_then(Value::as_array_mut) {
-                for port in ports {
-                    set_default(obj(port), "protocol", json!("TCP"));
-                }
-            }
-        }
-    }
-}
-
-/// The tag of an image reference, if it has one (`nginx:1.27` → `1.27`; digests have none).
-fn image_tag(image: &str) -> Option<&str> {
-    if image.contains('@') {
-        return None;
-    }
-    let last = image.rsplit('/').next().unwrap_or(image);
-    last.split_once(':').map(|(_, tag)| tag)
 }
 
 #[cfg(test)]
@@ -1169,7 +1076,8 @@ mod tests {
         let m = store.get("Pod", "default", "web").unwrap().unwrap();
         assert_ne!(m["metadata"]["uid"], "mine");
         assert_eq!(m["metadata"]["creationTimestamp"], clock::format(NOW));
-        assert!(m.get("status").is_none());
+        // The client's status is dropped; what is stored is the Go-encoded empty status.
+        assert_eq!(m["status"], json!({}));
     }
 
     #[test]

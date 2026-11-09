@@ -1,0 +1,15 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db
+  namespace: default
+spec:
+  ingress:
+  - ports:
+    - port: 5432
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: db
+  policyTypes:
+  - Ingress

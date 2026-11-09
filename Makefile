@@ -75,14 +75,14 @@ e2e: $(WASM) registry ## Play the game in a real browser (Playwright)
 # Upstream fidelity: `oracle/` (Go, never shipped) runs upstream Kubernetes on the cases in
 # engine/tests/fidelity and writes the expected outputs the engine is tested against.
 FIDELITY := engine/tests/fidelity
-# Generated from upstream's struct tags; checked in so the engine builds without Go.
-PATCHMETA := engine/src/patchmeta.rs
-GENERATED := $(FIDELITY) $(PATCHMETA)
+# Generated from upstream's Go types; checked in so the engine builds without Go.
+GOTYPES := engine/src/gotypes.rs
+GENERATED := $(FIDELITY) $(GOTYPES)
 
 oracle-goldens: ## Regenerate the upstream fidelity goldens (needs Go)
 	@command -v go >/dev/null || { echo "oracle-goldens needs Go (version in oracle/go.mod)"; exit 1; }
 	cd oracle && go vet ./... && go run ./cmd/kubeoracle goldens ../$(FIDELITY)
-	cd oracle && go run ./cmd/kubeoracle patchmeta ../$(PATCHMETA)
+	cd oracle && go run ./cmd/kubeoracle gotypes ../$(GOTYPES)
 
 fidelity: oracle-goldens ## Fail if the checked-in fidelity goldens are not what upstream produces
 	@git diff --exit-code -- $(GENERATED) || { echo "goldens are stale: run make oracle-goldens and review the diff"; exit 1; }

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: public
+  namespace: default
+spec:
+  allocateLoadBalancerNodePorts: true
+  externalTrafficPolicy: Cluster
+  internalTrafficPolicy: Cluster
+  ports:
+  - port: 443
+    protocol: TCP
+    targetPort: 443
+  selector:
+    app: public
+  sessionAffinity: None
+  type: LoadBalancer

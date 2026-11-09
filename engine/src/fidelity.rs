@@ -36,3 +36,17 @@ pub fn apply(live: &str, manifest: &str) -> Result<Value, String> {
     };
     Ok(serde_json::json!({ "patch": patch, "result": result }))
 }
+
+/// `manifest` decoded the way the API server's write path decodes it, defaulted with the
+/// upstream defaulters only (no create strategy, no admission) and encoded as upstream encodes
+/// it; `status` left out.
+pub fn defaults(manifest: &str) -> Result<Value, String> {
+    let manifest = parse("manifest", manifest)?;
+    let (info, mut object) = crate::api::admit(&manifest, "default").map_err(|e| e.message())?;
+    crate::defaults::set_object_defaults(info.kind, &mut object);
+    let mut object = crate::gojson::encode_object(&object);
+    if let Some(fields) = object.as_object_mut() {
+        fields.remove("status");
+    }
+    Ok(object)
+}

@@ -51,7 +51,7 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - oracle: `oracle/` Go module (`go.mod` pins k8s `v0.36.x` staging + `k8s.io/kubernetes v1.36.x` w/ staging `replace`s); bin `kubeoracle <area>` reads case dir → writes expected outputs. areas: `patch`, `apply`, `defaults`, `validate`, `describe`, `get`, `shell`.
 - fidelity: case = `engine/tests/fidelity/<area>/<case>/` w/ inputs (`live.yaml`, `patch.yaml`, `last-applied.yaml`, `manifest.yaml`, `objects.yaml`, `line.sh`, `cmd`) + `expected.*` written by oracle; Rust test per area walks dirs, runs engine fn, diffs.
 - make: `make oracle-goldens` (needs Go, version ∈ `oracle/go.mod`) regenerates; `make fidelity` = regenerate → fail on diff | untracked golden; `make ci` ∋ `fidelity` (mirrors workflow); CI job `fidelity` = setup-go → `make fidelity`. `cargo test` alone ⊥ Go.
-- engine: `patch::strategic_merge(live, patch, kind)` ← patch meta table (`patchMergeKey`, `patchStrategy` merge|replace|retainKeys, list type atomic|set|map) generated from upstream OpenAPI `x-kubernetes-*` ext into `engine/src/patchmeta.rs` (generated, checked in, by `kubeoracle patchmeta`).
+- engine: `smp::strategic_merge_patch(live, patch)` ← Go type graph `engine/src/gotypes.rs` (generated, checked in, by `kubeoracle gotypes`) from upstream `k8s.io/api` struct tags: `patchMergeKey`, `patchStrategy` merge|replace|retainKeys, json `omitempty`|`omitzero`, self-encoding types (Quantity, Time, IntOrString, Raw, []byte).
 - engine: apply = client-side 3-way: `CreateThreeWayMergePatch(last-applied, new, live)` semantics, then SMP onto live; `kubectl.kubernetes.io/last-applied-configuration` updated.
 - shell: POSIX subset (mvdan.cc/sh semantics = reference): `;` `&&` `||`, `'…'` `"…"` `\`, `$VAR` `${VAR}` `$?`, `VAR=x`, `export`, `$(…)`, `<` `>` `>>` `2>` `2>&1`, heredoc `<<EOF` & `<<'EOF'`; `for`/`if`/`while`/`case` ⊥ (refused by name, V5; later); externals = engine builtins; unknown → `<name>: command not found` exit 127.
 
@@ -91,7 +91,7 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - V33: ∀ fidelity case: engine output == oracle `expected.*` byte-exact (YAML/JSON compared after canonical key order; tables & describe & errors compared as text).
 - V34: SMP ∀ kind in C18: list merge by `patchMergeKey` from generated meta (⊥ field-name guessing); directives `$patch: delete|replace|merge`, `$deleteFromPrimitiveList/<f>`, `$setElementOrder/<f>`, `$retainKeys` honored; `null` deletes key; unknown directive → upstream error text.
 - V35: `apply` 3-way: field in last-applied & ∉ new manifest → removed from live; field set by others (∉ last-applied) & ∉ new → kept; 2nd identical apply → `unchanged` (V4 holds).
-- V36: ∀ create|apply|replace|patch → upstream defaulters for kind run before validation & store (Pod: `terminationMessagePath`, `terminationMessagePolicy`, `imagePullPolicy` by tag, `dnsPolicy`, `schedulerName`, `securityContext: {}`, `enableServiceLinks`, ports `protocol`, probes' periods/thresholds, …); `-o yaml` of stored obj == real cluster's modulo uid/timestamps/status.
+- V36: ∀ create|apply|replace|patch → upstream defaulters for kind run before validation & store, then object Go-encoded (`gojson`: non-ptr struct always written, `omitempty`/`omitzero`, Quantity canonical) (Pod: `terminationMessagePath`, `terminationMessagePolicy`, `imagePullPolicy` by tag, `dnsPolicy`, `schedulerName`, `securityContext: {}`, `enableServiceLinks`, ports `protocol`, probes' periods/thresholds, …); `-o yaml` of stored obj == real cluster's modulo uid/timestamps/status.
 - V37: ∀ invalid manifest → error = upstream `ErrorList` aggregate as kubectl prints: `The <Kind> "<name>" is invalid: <field.path>: <Type>: <detail>` (multi → `[a, b]`); field paths & ordering upstream's.
 - V38: `describe` ∀ kind in C18 & `get` table|wide ∀ kind in C18 == kubectl text (columns, widths, `<none>`, ages from virtual clock, event aggregation `(xN over M)`).
 - V39: shell line semantics (word splitting, quoting, expansion order, exit status, stdout/stderr routing, `$?`) == mvdan.cc/sh for lines using only builtins; construct ∉ §I.shell subset → refused by name (V5), ⊥ partial run.
@@ -140,7 +140,7 @@ T34|x|docs: update `docs/scenario-format.md` (schemaVersion `2`, manifests), `do
 T40|x|`oracle/` Go module + `kubeoracle` skeleton, case-dir walker, `make oracle-goldens`, CI `fidelity` job, Rust fidelity harness (`engine/tests/fidelity.rs`, canonical YAML/JSON diff)|C16,C17,I.oracle,I.fidelity,I.make,V33
 T41|x|patch meta: `kubeoracle patchmeta` → `engine/src/patchmeta.rs`; rewrite `strategic_merge` on it + directives; port upstream SMP cases into fidelity/patch|V34,I.engine,C18
 T42|x|apply 3-way merge on T41; fidelity/apply cases (removed field, foreign field kept, unchanged)|V35,V4,I.engine
-T43|.|defaulting port ∀ C18 kinds; fidelity/defaults (manifest → stored `-o yaml`)|V36,V2,C18
+T43|x|defaulting port ∀ C18 kinds; fidelity/defaults (manifest → stored `-o yaml`)|V36,V2,C18
 T44|.|validation port ∀ C18 kinds (create + update, incl. pod update rules V3); fidelity/validate error texts|V37,V3,V1,C8
 T45|.|`get` printers ∀ C18 kinds port of `pkg/printers/internalversion` (table + wide); fidelity/get|V38,V6
 T46|.|`describe` ∀ C18 kinds port of `k8s.io/kubectl/pkg/describe`; fidelity/describe|V38

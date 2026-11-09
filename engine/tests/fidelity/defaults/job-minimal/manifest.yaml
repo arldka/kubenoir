@@ -1,0 +1,9 @@
+apiVersion: batch/v1
+kind: Job
+metadata: {name: migrate, namespace: default}
+spec:
+  template:
+    metadata: {labels: {job: migrate}}
+    spec:
+      restartPolicy: Never
+      containers: [{name: run, image: migrate:3}]

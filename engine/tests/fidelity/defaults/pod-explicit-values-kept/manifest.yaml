@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata: {name: kept, namespace: default}
+spec:
+  restartPolicy: Never
+  dnsPolicy: Default
+  schedulerName: custom
+  terminationGracePeriodSeconds: 5
+  enableServiceLinks: false
+  securityContext: {runAsUser: 1000}
+  containers:
+    - name: app
+      image: app
+      imagePullPolicy: Never
+      terminationMessagePolicy: FallbackToLogsOnError
+      readinessProbe:
+        exec: {command: [cat, /ready]}
+        timeoutSeconds: 3
+        failureThreshold: 1
