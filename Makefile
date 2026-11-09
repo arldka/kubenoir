@@ -16,7 +16,7 @@ ENGINE_SOURCES := $(shell find engine/src -name '*.rs') engine/build.rs engine/C
 # Scenarios `make scenario-check` checks; override with SCENARIO=path/to/scenario.json.
 SCENARIO ?= $(wildcard scenarios/*/scenario.json)
 
-.PHONY: help setup doctor wasm apps registry scenario-check fmt lint test check build dev e2e ci clean
+.PHONY: help setup doctor wasm apps registry scenario-check fmt lint test check build dev e2e oracle-goldens fidelity ci clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  \033[33m%-8s\033[0m %s\n", $$1, $$2}'
@@ -72,7 +72,19 @@ dev: $(WASM) registry ## Start the dev server
 e2e: $(WASM) registry ## Play the game in a real browser (Playwright)
 	cd frontend && bun run test:e2e
 
-ci: lint test check build e2e ## Everything CI runs
+# Upstream fidelity: `oracle/` (Go, never shipped) runs upstream Kubernetes on the cases in
+# engine/tests/fidelity and writes the expected outputs the engine is tested against.
+FIDELITY := engine/tests/fidelity
+
+oracle-goldens: ## Regenerate the upstream fidelity goldens (needs Go)
+	@command -v go >/dev/null || { echo "oracle-goldens needs Go (version in oracle/go.mod)"; exit 1; }
+	cd oracle && go vet ./... && go run ./cmd/kubeoracle goldens ../$(FIDELITY)
+
+fidelity: oracle-goldens ## Fail if the checked-in fidelity goldens are not what upstream produces
+	@git diff --exit-code -- $(FIDELITY) || { echo "goldens are stale: run make oracle-goldens and review the diff"; exit 1; }
+	@test -z "$$(git status --porcelain --untracked-files=all -- $(FIDELITY))" || { git status --short -- $(FIDELITY); echo "untracked goldens: git add them"; exit 1; }
+
+ci: lint test fidelity check build e2e ## Everything CI runs
 
 clean: ## Remove build outputs
 	cargo clean --manifest-path $(ENGINE)

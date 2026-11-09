@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+spec:
+  containers:
+    - name: app
+      image: shop:1.0
+      env:
+        - name: MODE
+          value: prod
+    - name: sidecar
+      image: proxy:2

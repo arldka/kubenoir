@@ -38,6 +38,19 @@ jobs:
       - run: cargo test --manifest-path engine/Cargo.toml
       - run: cargo test --manifest-path apps/Cargo.toml
 
+  # Upstream fidelity goldens: regenerates them with upstream Kubernetes (oracle/, Go) and fails
+  # if they differ from the checked-in ones. Mirrors `make fidelity`.
+  fidelity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: oracle/go.mod
+          cache-dependency-path: oracle/go.sum
+      - run: make fidelity
+
   # Builds the engine to WASM and the local registry (apps + scenarios, checked) once; the frontend
   # jobs reuse both. Mirrors `make wasm` and `make registry`.
   wasm:

@@ -31,6 +31,14 @@ if [ -x /usr/bin/rustc ]; then
   warn system-rust "/usr/bin/rustc exists; it can shadow rustup in shells where ~/.cargo/bin is not first"
 fi
 
+# Go only runs the upstream fidelity oracle (make oracle-goldens / make fidelity), never the game.
+want_go="$(sed -n 's/^go //p' oracle/go.mod 2>/dev/null)"
+if command -v go >/dev/null 2>&1; then
+  ok go "$(go version) (oracle/go.mod wants $want_go)"
+else
+  warn go "not found; only needed for make oracle-goldens / make fidelity (Go $want_go)"
+fi
+
 # The engine targets wasm32-unknown-unknown; the template apps it embeds target wasm32-wasip1.
 for target in wasm32-unknown-unknown wasm32-wasip1; do
   if rustup target list --installed 2>/dev/null | grep -qx "$target"; then

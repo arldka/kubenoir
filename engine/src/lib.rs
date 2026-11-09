@@ -13,6 +13,9 @@ mod events;
 mod exec;
 mod explain;
 mod fs;
+// Upstream-fidelity entry points for `tests/fidelity.rs`; not part of the engine's API.
+#[doc(hidden)]
+pub mod fidelity;
 mod help;
 mod imperative;
 mod jsonpath;

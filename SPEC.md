@@ -15,7 +15,7 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - C5: template config describes app; behavior ∈ app code; ⊥ `when/then` tables (incl. oracle/probe outcomes).
 - C6: networking = connectivity oracle (engine fn of cluster state), ⊥ packet/socket sim, ⊥ socket host calls. Replaces old "apps mock connections" rule.
 - C7: store stays one generic table keyed (kind, namespace, name) → JSON (`engine/src/store.rs`).
-- C8: validation via `k8s-openapi` types (`0.28`, `v1_36`); ⊥ hand-written schema per kind.
+- C8: validation via `k8s-openapi` types (`0.28`, `v1_36`); ⊥ hand-written schema per kind. Semantic rules (required, formats, cross-field, immutability) = Rust port of upstream `pkg/apis/<group>/validation`, diff-tested (C17), ⊥ invented rules.
 - C9: kustomize/helm ⊥ scope (no `apply -k`, no `helm`); unsupported → V5 error.
 - C10: `make ci` green ∀ task.
 - C11: scenario JSON = story & rules only (`id`, `title`, `briefing`, `objective`, `hints`, `success`, `findings`, `images`, clock). ∀ k8s objects (Nodes incl.) ∈ YAML files it references; ⊥ k8s objects inline in JSON.
@@ -23,6 +23,9 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - C13: each scenario = one fresh simulation: load & restart build a new `Engine` from the scenario files (+ apps); ⊥ cluster, clock, files, findings or judge state carried between scenarios | attempts. Time limit = 15 min of cluster time from player start, same for every scenario (⊥ per-scenario setting); unsolved at 15 min → case closes failed.
 - C14: connectivity (T20–T24) = simplest model: a connection attempt is answered from the cluster state when the container started (start-time snapshot), ⊥ resumable runs, ⊥ re-simulation for networking. A fix shows when the container next starts (crash restart / backoff / rollout); player waits. Volumes (T17) keep their own timeline.
 - C15: kubelet retries are flat, ⊥ Kubernetes' doubling backoff: a container that exited restarts 10 s after it exited; a failed image pull, a failed volume mount and a missing ConfigMap/Secret key are retried every 10 s; CrashLoopBackOff message says `back-off 10s`. Warm-up history replays accordingly (a 47 min crash loop = 256 restarts).
+- C16: upstream Go (k8s.io/apimachinery, k8s.io/kubectl, k8s.io/kubernetes `v1.36.x` = `k8s-openapi` `v1_36`; mvdan.cc/sh) only in `oracle/` (native Go module, dev & CI). ⊥ Go in `engine/`, `frontend/`, registry, browser download. Engine stays pure Rust; Go = reference, ⊥ runtime. (measured 2026-11-10: SMP-in-wasmi alone +5.4 MB gz vs engine 1.9 MB gz → rejected)
+- C17: fidelity goldens checked in under `engine/tests/fidelity/`; `cargo test` ⊥ needs Go. `make oracle-goldens` regenerates from `oracle/`; CI job w/ Go regenerates & fails on `git diff`. Golden change = upstream behavior change, reviewed like code.
+- C18: port scope = kinds in `api::kinds()` (ConfigMap CronJob Deployment EndpointSlice Endpoints Event Job Namespace NetworkPolicy Node Pod ReplicaSet Secret Service); new kind → its SMP meta, defaults, validation, printer + goldens in same task.
 
 ## §I interfaces
 
@@ -45,6 +48,12 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - js: `Engine.readFile(path)` → text|undefined; `Engine.takeEditorRequest()` → path|undefined (set by `vim`); `Engine.writeFile(path, text)` (exists).
 - ui: `frontend/src/lib/terminal/vim.ts` = pure modal-editor state machine (keys in → screen model out); terminal draws it full-screen.
 - docs: `docs/scenario-format.md`, `docs/apps.md`, `CLAUDE.md` container-apps bullet.
+- oracle: `oracle/` Go module (`go.mod` pins k8s `v0.36.x` staging + `k8s.io/kubernetes v1.36.x` w/ staging `replace`s); bin `kubeoracle <area>` reads case dir → writes expected outputs. areas: `patch`, `apply`, `defaults`, `validate`, `describe`, `get`, `shell`.
+- fidelity: case = `engine/tests/fidelity/<area>/<case>/` w/ inputs (`live.yaml`, `patch.yaml`, `last-applied.yaml`, `manifest.yaml`, `objects.yaml`, `line.sh`, `cmd`) + `expected.*` written by oracle; Rust test per area walks dirs, runs engine fn, diffs.
+- make: `make oracle-goldens` (needs Go, version ∈ `oracle/go.mod`) regenerates; `make fidelity` = regenerate → fail on diff | untracked golden; `make ci` ∋ `fidelity` (mirrors workflow); CI job `fidelity` = setup-go → `make fidelity`. `cargo test` alone ⊥ Go.
+- engine: `patch::strategic_merge(live, patch, kind)` ← patch meta table (`patchMergeKey`, `patchStrategy` merge|replace|retainKeys, list type atomic|set|map) generated from upstream OpenAPI `x-kubernetes-*` ext into `engine/src/patchmeta.rs` (generated, checked in, by `kubeoracle patchmeta`).
+- engine: apply = client-side 3-way: `CreateThreeWayMergePatch(last-applied, new, live)` semantics, then SMP onto live; `kubectl.kubernetes.io/last-applied-configuration` updated.
+- shell: POSIX subset (mvdan.cc/sh semantics = reference): `;` `&&` `||`, `'…'` `"…"` `\`, `$VAR` `${VAR}` `$?`, `VAR=x`, `export`, `$(…)`, `<` `>` `>>` `2>` `2>&1`, heredoc `<<EOF` & `<<'EOF'`; `for`/`if`/`while`/`case` ⊥ (refused by name, V5; later); externals = engine builtins; unknown → `<name>: command not found` exit 127.
 
 ## §V invariants
 
@@ -79,6 +88,13 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - V30: elapsed cluster time since player start ≥ 15 min (900 s) & case unsolved → status `solved: true`, outcome `timeUp`, report lists the assertions not held; solved before 15 min ⊥ affected; scenario JSON with `timeLimitMinutes` → ⊥ ignored silently (load error: limit is fixed).
 - V31: ∀ scenario load | restart → `Engine::from_scenario` anew; two engines built from same inputs ⊥ share state; after restart: cluster = scenario's, clock = start, findings 0, files = seeded, timer = 15 min.
 - V32: connection outcome (T20+) = pure fn(store snapshot at container start, source pod, host, port); later cluster change ⊥ alters a running container's outcome.
+- V33: ∀ fidelity case: engine output == oracle `expected.*` byte-exact (YAML/JSON compared after canonical key order; tables & describe & errors compared as text).
+- V34: SMP ∀ kind in C18: list merge by `patchMergeKey` from generated meta (⊥ field-name guessing); directives `$patch: delete|replace|merge`, `$deleteFromPrimitiveList/<f>`, `$setElementOrder/<f>`, `$retainKeys` honored; `null` deletes key; unknown directive → upstream error text.
+- V35: `apply` 3-way: field in last-applied & ∉ new manifest → removed from live; field set by others (∉ last-applied) & ∉ new → kept; 2nd identical apply → `unchanged` (V4 holds).
+- V36: ∀ create|apply|replace|patch → upstream defaulters for kind run before validation & store (Pod: `terminationMessagePath`, `terminationMessagePolicy`, `imagePullPolicy` by tag, `dnsPolicy`, `schedulerName`, `securityContext: {}`, `enableServiceLinks`, ports `protocol`, probes' periods/thresholds, …); `-o yaml` of stored obj == real cluster's modulo uid/timestamps/status.
+- V37: ∀ invalid manifest → error = upstream `ErrorList` aggregate as kubectl prints: `The <Kind> "<name>" is invalid: <field.path>: <Type>: <detail>` (multi → `[a, b]`); field paths & ordering upstream's.
+- V38: `describe` ∀ kind in C18 & `get` table|wide ∀ kind in C18 == kubectl text (columns, widths, `<none>`, ages from virtual clock, event aggregation `(xN over M)`).
+- V39: shell line semantics (word splitting, quoting, expansion order, exit status, stdout/stderr routing, `$?`) == mvdan.cc/sh for lines using only builtins; construct ∉ §I.shell subset → refused by name (V5), ⊥ partial run.
 
 ## §T tasks
 
@@ -121,6 +137,15 @@ T30|x|pilot #18 Nobody's Answering (selector mismatch)|T19,T20,T22,V20,V21
 T31|x|pilot #20 Out of Jurisdiction (cross-ns DNS; FQDN \| ExternalName both pass)|T20,T23,V9,V21
 T32|x|Job + CronJob controllers, cron parser, time-skip|V17
 T34|x|docs: update `docs/scenario-format.md` (schemaVersion `2`, manifests), `docs/registry.md` (dir layout, replay ⊥ score verification), `docs/apps.md`, `CLAUDE.md` networking & scoring bullets|C3,C6,C11,I.docs
+T40|x|`oracle/` Go module + `kubeoracle` skeleton, case-dir walker, `make oracle-goldens`, CI `fidelity` job, Rust fidelity harness (`engine/tests/fidelity.rs`, canonical YAML/JSON diff)|C16,C17,I.oracle,I.fidelity,I.make,V33
+T41|.|patch meta: `kubeoracle patchmeta` → `engine/src/patchmeta.rs`; rewrite `strategic_merge` on it + directives; port upstream SMP cases into fidelity/patch|V34,I.engine,C18
+T42|.|apply 3-way merge on T41; fidelity/apply cases (removed field, foreign field kept, unchanged)|V35,V4,I.engine
+T43|.|defaulting port ∀ C18 kinds; fidelity/defaults (manifest → stored `-o yaml`)|V36,V2,C18
+T44|.|validation port ∀ C18 kinds (create + update, incl. pod update rules V3); fidelity/validate error texts|V37,V3,V1,C8
+T45|.|`get` printers ∀ C18 kinds port of `pkg/printers/internalversion` (table + wide); fidelity/get|V38,V6
+T46|.|`describe` ∀ C18 kinds port of `k8s.io/kubectl/pkg/describe`; fidelity/describe|V38
+T47|.|shell: parser + interpreter for §I.shell subset (lists, quoting, params, cmd subst, redirs, heredoc); keep builtins; fidelity/shell vs mvdan.cc/sh w/ same builtins stubbed|V39,V5,I.shell
+T48|.|docs: `docs/fidelity.md` (oracle, goldens, adding a case/kind), CLAUDE.md test bullet|C16,C17
 
 ## §B bugs
 
