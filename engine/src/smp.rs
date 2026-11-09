@@ -1,5 +1,6 @@
 //! Strategic merge patch, ported from upstream `k8s.io/apimachinery/pkg/util/strategicpatch`
-//! (v0.36, `patch.go`): the merge half (`StrategicMergePatch` → `mergeMap` and friends) with the
+//! (v0.36, `patch.go`): the merge half (`StrategicMergePatch` → `mergeMap` and friends) and the
+//! diff half `kubectl apply` uses (`CreateThreeWayMergePatch` → `diffMaps` and friends), with the
 //! same directives, ordering rules and error texts. Functions keep upstream's names (snake_case)
 //! and order of operations so the two can be read side by side; `tests/fidelity.rs` checks the
 //! port against upstream itself (SPEC V33, V34).
@@ -1020,6 +1021,463 @@ fn normalize_slice_order(
     });
     to_sort.extend(to_delete);
     Ok(to_sort)
+}
+
+// ---- the diff half: CreateThreeWayMergePatch (what `kubectl apply` sends) ----
+
+/// `DiffOptions`.
+#[derive(Clone, Copy, Default)]
+struct DiffOptions {
+    set_element_order: bool,
+    ignore_changes_and_additions: bool,
+    ignore_deletions: bool,
+    build_retain_keys_directive: bool,
+}
+
+/// `CreateThreeWayMergePatch(original, modified, current, schema, overwrite: true)`: the patch
+/// `kubectl apply` sends. `original` is the last-applied configuration's text (`None` when the
+/// object has no annotation), `modified` the new configuration, `current` the live object. The
+/// schema comes from `modified`'s apiVersion and kind. An empty object means nothing to send
+/// (`unchanged`).
+pub fn create_three_way_merge_patch(
+    original: Option<&str>,
+    modified: &Value,
+    current: &Value,
+) -> Result<Value, String> {
+    let original_map: JsonMap = match original {
+        Some(text) if !text.is_empty() => serde_json::from_str(text).map_err(|_| ERR_BAD_JSON_DOC.to_string())?,
+        _ => JsonMap::new(),
+    };
+    let (Value::Object(modified_map), Value::Object(current_map)) = (modified, current) else {
+        return Err(ERR_BAD_JSON_DOC.into());
+    };
+    let api_version = modified_map
+        .get("apiVersion")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let kind = modified_map.get("kind").and_then(Value::as_str).unwrap_or_default();
+    let schema = root(api_version, kind).ok_or(ERR_UNSUPPORTED)?;
+
+    let delta_map = diff_maps(
+        current_map,
+        modified_map,
+        schema,
+        DiffOptions {
+            ignore_deletions: true,
+            set_element_order: true,
+            ..DiffOptions::default()
+        },
+    )?;
+    let deletions_map = diff_maps(
+        &original_map,
+        modified_map,
+        schema,
+        DiffOptions {
+            set_element_order: true,
+            ignore_changes_and_additions: true,
+            ..DiffOptions::default()
+        },
+    )?;
+    let options = MergeOptions {
+        merge_parallel_list: false,
+        ignore_unmatched_nulls: false,
+    };
+    merge_map(deletions_map, delta_map, schema, options).map(Value::Object)
+}
+
+/// `reflect.DeepEqual` on decoded JSON (numbers are float64).
+fn go_deep_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| go_deep_eq(x, y)),
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| go_deep_eq(v, w)))
+        }
+        _ => a == b,
+    }
+}
+
+/// `diffMaps`.
+fn diff_maps(original: &JsonMap, modified: &JsonMap, schema: Schema, options: DiffOptions) -> Result<JsonMap, String> {
+    let mut patch = JsonMap::new();
+    let mut retain_keys_list: Vec<Value> = Vec::new();
+    for (key, modified_value) in modified {
+        if options.build_retain_keys_directive && !modified_value.is_null() {
+            retain_keys_list.push(Value::String(key.clone()));
+        }
+        let Some(original_value) = original.get(key) else {
+            if !options.ignore_changes_and_additions {
+                patch.insert(key.clone(), modified_value.clone());
+            }
+            continue;
+        };
+        if handle_directive_marker(key, original_value, modified_value, &mut patch)? {
+            continue;
+        }
+        if !same_type(original_value, modified_value) {
+            if !options.ignore_changes_and_additions {
+                patch.insert(key.clone(), modified_value.clone());
+            }
+            continue;
+        }
+        match (original_value, modified_value) {
+            (Value::Object(o), Value::Object(m)) => handle_map_diff(key, o, m, &mut patch, schema, options)?,
+            (Value::Array(o), Value::Array(m)) => handle_slice_diff(key, o, m, &mut patch, schema, options)?,
+            _ => replace_patch_field_if_not_equal(key, original_value, modified_value, &mut patch, options),
+        }
+    }
+    update_patch_if_missing(original, modified, &mut patch, options);
+    if !retain_keys_list.is_empty() && (!patch.is_empty() || has_additional_new_field(original, modified)) {
+        patch.insert(
+            RETAIN_KEYS_DIRECTIVE.into(),
+            Value::Array(sort_scalars(retain_keys_list)),
+        );
+    }
+    Ok(patch)
+}
+
+/// `handleDirectiveMarker`.
+fn handle_directive_marker(key: &str, original: &Value, modified: &Value, patch: &mut JsonMap) -> Result<bool, String> {
+    if key != DIRECTIVE_MARKER {
+        return Ok(false);
+    }
+    let invalid = || format!("invalid value for special key: {DIRECTIVE_MARKER}");
+    let original = original.as_str().ok_or_else(invalid)?;
+    let modified_str = modified.as_str().ok_or_else(invalid)?;
+    if modified_str != original {
+        patch.insert(DIRECTIVE_MARKER.into(), modified.clone());
+    }
+    Ok(true)
+}
+
+/// `handleMapDiff`.
+fn handle_map_diff(
+    key: &str,
+    original: &JsonMap,
+    modified: &JsonMap,
+    patch: &mut JsonMap,
+    schema: Schema,
+    mut options: DiffOptions,
+) -> Result<(), String> {
+    let (subschema, patch_meta) = match schema.lookup_patch_metadata_for_struct(key) {
+        Ok(found) => found,
+        Err(_)
+            if original == modified
+                || go_deep_eq(&Value::Object(original.clone()), &Value::Object(modified.clone())) =>
+        {
+            return Ok(())
+        }
+        Err(e) => return Err(e),
+    };
+    let (retain_keys, patch_strategy) = extract_retain_keys_patch_strategy(&patch_meta.strategies)?;
+    options.build_retain_keys_directive = retain_keys;
+    if patch_strategy == REPLACE_DIRECTIVE {
+        if !options.ignore_changes_and_additions {
+            patch.insert(key.into(), Value::Object(modified.clone()));
+        }
+    } else {
+        let patch_value = diff_maps(original, modified, subschema, options)?;
+        if !patch_value.is_empty() {
+            patch.insert(key.into(), Value::Object(patch_value));
+        }
+    }
+    Ok(())
+}
+
+/// `handleSliceDiff`.
+fn handle_slice_diff(
+    key: &str,
+    original: &[Value],
+    modified: &[Value],
+    patch: &mut JsonMap,
+    schema: Schema,
+    mut options: DiffOptions,
+) -> Result<(), String> {
+    let (subschema, patch_meta) = match schema.lookup_patch_metadata_for_slice(key) {
+        Ok(found) => found,
+        Err(_) if go_deep_eq(&Value::Array(original.to_vec()), &Value::Array(modified.to_vec())) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let (retain_keys, patch_strategy) = extract_retain_keys_patch_strategy(&patch_meta.strategies)?;
+    if patch_strategy == MERGE_DIRECTIVE {
+        options.build_retain_keys_directive = retain_keys;
+        let ListDiff {
+            patch_list: add_list,
+            deletion_list,
+            set_order_list,
+        } = diff_lists(original.to_vec(), modified, subschema, patch_meta.merge_key, options)?;
+        if !add_list.is_empty() {
+            patch.insert(key.into(), Value::Array(add_list));
+        }
+        if !deletion_list.is_empty() {
+            patch.insert(
+                format!("{DELETE_FROM_PRIMITIVE_LIST_PREFIX}/{key}"),
+                Value::Array(deletion_list),
+            );
+        }
+        if !set_order_list.is_empty() {
+            patch.insert(
+                format!("{SET_ELEMENT_ORDER_PREFIX}/{key}"),
+                Value::Array(set_order_list),
+            );
+        }
+    } else {
+        replace_patch_field_if_not_equal(
+            key,
+            &Value::Array(original.to_vec()),
+            &Value::Array(modified.to_vec()),
+            patch,
+            options,
+        );
+    }
+    Ok(())
+}
+
+/// `replacePatchFieldIfNotEqual`.
+fn replace_patch_field_if_not_equal(
+    key: &str,
+    original: &Value,
+    modified: &Value,
+    patch: &mut JsonMap,
+    options: DiffOptions,
+) {
+    if options.ignore_changes_and_additions || go_deep_eq(original, modified) {
+        return;
+    }
+    patch.insert(key.into(), modified.clone());
+}
+
+/// `updatePatchIfMissing`: `null` for every key `modified` dropped.
+fn update_patch_if_missing(original: &JsonMap, modified: &JsonMap, patch: &mut JsonMap, options: DiffOptions) {
+    if options.ignore_deletions {
+        return;
+    }
+    for key in original.keys() {
+        if !modified.contains_key(key) {
+            patch.insert(key.clone(), Value::Null);
+        }
+    }
+}
+
+/// `hasAdditionalNewField`.
+fn has_additional_new_field(original: &JsonMap, modified: &JsonMap) -> bool {
+    original.iter().any(|(k, v)| !v.is_null() && !modified.contains_key(k))
+}
+
+/// What `diffLists` returns.
+struct ListDiff {
+    patch_list: Vec<Value>,
+    /// The parallel deletion list (`$deleteFromPrimitiveList/<key>`).
+    deletion_list: Vec<Value>,
+    /// The `$setElementOrder/<key>` list.
+    set_order_list: Vec<Value>,
+}
+
+/// `diffLists`.
+fn diff_lists(
+    mut original: Vec<Value>,
+    modified: &[Value],
+    schema: Schema,
+    merge_key: &str,
+    options: DiffOptions,
+) -> Result<ListDiff, String> {
+    if original.is_empty() {
+        let patch_list = if modified.is_empty() || options.ignore_changes_and_additions {
+            Vec::new()
+        } else {
+            modified.to_vec()
+        };
+        return Ok(ListDiff {
+            patch_list,
+            deletion_list: Vec::new(),
+            set_order_list: Vec::new(),
+        });
+    }
+    let is_map = slice_element_type(&[&original, modified])?;
+    let mut set_order_list = Vec::new();
+    if is_map {
+        let (patch_list, delete_list) = diff_lists_of_maps(&original, modified, schema, merge_key, options)?;
+        let mut patch_list = normalize_slice_order(patch_list, modified, merge_key, true)?;
+        let order_same = is_order_same(&original, modified, merge_key)?;
+        patch_list.extend(delete_list);
+        if options.set_element_order
+            && ((!options.ignore_changes_and_additions && (!patch_list.is_empty() || !order_same))
+                || (!options.ignore_deletions && !patch_list.is_empty()))
+        {
+            set_order_list = modified
+                .iter()
+                .map(|v| {
+                    let mut item = JsonMap::new();
+                    item.insert(merge_key.into(), v.get(merge_key).cloned().unwrap_or(Value::Null));
+                    Value::Object(item)
+                })
+                .collect();
+        }
+        Ok(ListDiff {
+            patch_list,
+            deletion_list: Vec::new(),
+            set_order_list,
+        })
+    } else {
+        // Sorts `original` in place, as upstream does: the comparison below sees it sorted.
+        let (patch_list, delete_list) = diff_lists_of_scalars(&mut original, modified, options);
+        let patch_list = normalize_slice_order(patch_list, modified, merge_key, false)?;
+        if options.set_element_order
+            && ((!options.ignore_deletions && !delete_list.is_empty())
+                || (!options.ignore_changes_and_additions
+                    && !go_deep_eq(&Value::Array(original), &Value::Array(modified.to_vec()))))
+        {
+            set_order_list = modified.to_vec();
+        }
+        Ok(ListDiff {
+            patch_list,
+            deletion_list: delete_list,
+            set_order_list,
+        })
+    }
+}
+
+/// `isOrderSame`.
+fn is_order_same(original: &[Value], modified: &[Value], merge_key: &str) -> Result<bool, String> {
+    if original.len() != modified.len() {
+        return Ok(false);
+    }
+    for (o, m) in original.iter().zip(modified) {
+        if !merge_key_value_equal(o, m, merge_key)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// `sortScalars`: by `%v` text. (Upstream's `sort.Sort` is unstable and its comparator is `<=`;
+/// the two can only order differently among items that print the same.)
+fn sort_scalars(mut s: Vec<Value>) -> Vec<Value> {
+    s.sort_by_key(go_v);
+    s
+}
+
+/// `diffListsOfScalars`: (additions, deletions); sorts `original` in place.
+fn diff_lists_of_scalars(
+    original: &mut Vec<Value>,
+    modified: &[Value],
+    options: DiffOptions,
+) -> (Vec<Value>, Vec<Value>) {
+    *original = sort_scalars(std::mem::take(original));
+    let modified_scalars = sort_scalars(modified.to_vec());
+    let (mut oi, mut mi) = (0, 0);
+    let (mut add_list, mut deletion_list) = (Vec::new(), Vec::new());
+    loop {
+        let original_in = oi < original.len();
+        let modified_in = mi < modified_scalars.len();
+        if !original_in && !modified_in {
+            break;
+        }
+        let os = if original_in {
+            go_v(&original[oi])
+        } else {
+            String::new()
+        };
+        let ms = if modified_in {
+            go_v(&modified_scalars[mi])
+        } else {
+            String::new()
+        };
+        let both = original_in && modified_in;
+        if both && os == ms {
+            oi += 1;
+            mi += 1;
+        } else if !original_in || (both && os > ms) {
+            if !options.ignore_changes_and_additions {
+                add_list.push(modified_scalars[mi].clone());
+            }
+            mi += 1;
+        } else {
+            if !options.ignore_deletions {
+                deletion_list.push(original[oi].clone());
+            }
+            oi += 1;
+        }
+    }
+    (add_list, deduplicate_scalars(deletion_list))
+}
+
+/// `sortMergeListsByNameArray(s, schema, mergeKey, recurse: false)`.
+fn sort_merge_lists_by_name_array(s: &[Value], merge_key: &str) -> Result<Vec<Value>, String> {
+    if s.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !slice_element_type(&[s])? {
+        return Ok(sort_scalars(deduplicate_scalars(s.to_vec())));
+    }
+    let mut sorted = s.to_vec();
+    sorted.sort_by_key(|m| go_v(m.get(merge_key).unwrap_or(&Value::Null)));
+    Ok(sorted)
+}
+
+/// `getMapAndMergeKeyValueByIndex`.
+fn map_and_merge_key_value<'a>(item: &'a Value, merge_key: &str) -> Result<(&'a JsonMap, &'a Value), String> {
+    let m = item.as_object().ok_or_else(|| err_bad_arg_type(GO_MAP, item))?;
+    let val = m.get(merge_key).ok_or_else(|| err_no_merge_key(m, merge_key))?;
+    Ok((m, val))
+}
+
+/// `diffListsOfMaps`: (additions and changes, `$patch: delete` items).
+fn diff_lists_of_maps(
+    original: &[Value],
+    modified: &[Value],
+    schema: Schema,
+    merge_key: &str,
+    options: DiffOptions,
+) -> Result<(Vec<Value>, Vec<Value>), String> {
+    let original_sorted = sort_merge_lists_by_name_array(original, merge_key)?;
+    let modified_sorted = sort_merge_lists_by_name_array(modified, merge_key)?;
+    let (mut patch, mut deletion_list) = (Vec::new(), Vec::new());
+    let (mut oi, mut mi) = (0, 0);
+    loop {
+        let original_in = oi < original_sorted.len();
+        let modified_in = mi < modified_sorted.len();
+        if !original_in && !modified_in {
+            break;
+        }
+        let both = original_in && modified_in;
+        let o = if original_in {
+            Some(map_and_merge_key_value(&original_sorted[oi], merge_key)?)
+        } else {
+            None
+        };
+        let m = if modified_in {
+            Some(map_and_merge_key_value(&modified_sorted[mi], merge_key)?)
+        } else {
+            None
+        };
+        let os = o.map(|(_, v)| go_v(v)).unwrap_or_default();
+        let ms = m.map(|(_, v)| go_v(v)).unwrap_or_default();
+        if both && os == ms {
+            let ((o_map, _), (m_map, m_val)) = (o.expect("in bounds"), m.expect("in bounds"));
+            let mut patch_value = diff_maps(o_map, m_map, schema, options)?;
+            if !patch_value.is_empty() {
+                patch_value.insert(merge_key.into(), m_val.clone());
+                patch.push(Value::Object(patch_value));
+            }
+            oi += 1;
+            mi += 1;
+        } else if !original_in || (both && os > ms) {
+            if !options.ignore_changes_and_additions {
+                patch.push(Value::Object(m.expect("in bounds").0.clone()));
+            }
+            mi += 1;
+        } else {
+            if !options.ignore_deletions {
+                let mut directive = JsonMap::new();
+                directive.insert(merge_key.into(), o.expect("in bounds").1.clone());
+                directive.insert(DIRECTIVE_MARKER.into(), Value::String(DELETE_DIRECTIVE.into()));
+                deletion_list.push(Value::Object(directive));
+            }
+            oi += 1;
+        }
+    }
+    Ok((patch, deletion_list))
 }
 
 // ---- Go's sort.SliceStable (sort/zsortfunc.go), step for step ----

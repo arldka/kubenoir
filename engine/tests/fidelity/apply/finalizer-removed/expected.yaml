@@ -1,0 +1,35 @@
+patch:
+  metadata:
+    $deleteFromPrimitiveList/finalizers:
+    - example.com/a
+    $setElementOrder/finalizers:
+    - example.com/b
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"finalizers":["example.com/b"],"labels":{"app":"web"},"name":"web","namespace":"default"},"spec":{"containers":[{"args":["--port","8080"],"image":"web:1","name":"app"}],"tolerations":[{"key":"dedicated","operator":"Exists"}]}}
+result:
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"finalizers":["example.com/b"],"labels":{"app":"web"},"name":"web","namespace":"default"},"spec":{"containers":[{"args":["--port","8080"],"image":"web:1","name":"app"}],"tolerations":[{"key":"dedicated","operator":"Exists"}]}}
+    creationTimestamp: "2026-11-01T09:00:00Z"
+    finalizers:
+    - example.com/b
+    labels:
+      app: web
+    name: web
+    namespace: default
+    resourceVersion: "4242"
+    uid: 0f1e2d3c-0000-4000-8000-000000000001
+  spec:
+    containers:
+    - args:
+      - --port
+      - "8080"
+      image: web:1
+      name: app
+    tolerations:
+    - key: dedicated
+      operator: Exists

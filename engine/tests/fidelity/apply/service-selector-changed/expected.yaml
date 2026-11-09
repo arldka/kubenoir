@@ -1,0 +1,38 @@
+patch:
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","kind":"Service","metadata":{"annotations":{},"name":"shop","namespace":"default"},"spec":{"ports":[{"name":"http","port":80,"targetPort":8080},{"name":"metrics","port":9090,"targetPort":9090}],"selector":{"app":"shop","track":"stable"}}}
+  spec:
+    selector:
+      track: stable
+result:
+  apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","kind":"Service","metadata":{"annotations":{},"name":"shop","namespace":"default"},"spec":{"ports":[{"name":"http","port":80,"targetPort":8080},{"name":"metrics","port":9090,"targetPort":9090}],"selector":{"app":"shop","track":"stable"}}}
+    creationTimestamp: "2026-11-01T09:00:00Z"
+    name: shop
+    namespace: default
+    resourceVersion: "4242"
+    uid: 0f1e2d3c-0000-4000-8000-000000000001
+  spec:
+    clusterIP: 10.96.0.17
+    clusterIPs:
+    - 10.96.0.17
+    ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
+    - name: metrics
+      port: 9090
+      protocol: TCP
+      targetPort: 9090
+    selector:
+      app: shop
+      track: stable
+    sessionAffinity: None
+    type: ClusterIP

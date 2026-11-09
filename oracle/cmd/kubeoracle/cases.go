@@ -19,6 +19,7 @@ type area func(c *caseDir) error
 
 var areas = map[string]area{
 	"patch": patchCase,
+	"apply": applyCase,
 }
 
 // goldens runs every case of every area under root (`<root>/<area>/<case>/`). Expected files

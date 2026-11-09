@@ -114,3 +114,10 @@ fn strategic_merge_patch_matches_upstream() {
         engine::fidelity::strategic_merge(&read(case, "live.yaml"), &read(case, "patch.yaml"))
     });
 }
+
+#[test]
+fn apply_matches_upstream() {
+    run_area("apply", |case| {
+        engine::fidelity::apply(&read(case, "live.yaml"), &read(case, "manifest.yaml"))
+    });
+}

@@ -273,6 +273,8 @@ pub enum ApiError {
         resource: String,
         name: String,
     },
+    /// A strategic merge patch that cannot be computed or applied (upstream's error text).
+    Patch(String),
     Store(StoreError),
 }
 
@@ -289,6 +291,8 @@ impl ApiError {
             ApiError::Invalid { .. } => Some("Invalid"),
             ApiError::NotFound { .. } => Some("NotFound"),
             ApiError::AlreadyExists { .. } => Some("AlreadyExists"),
+            ApiError::Patch(message) if crate::smp::is_bad_request(message) => Some("BadRequest"),
+            ApiError::Patch(_) => None,
         }
     }
 
@@ -332,6 +336,7 @@ impl ApiError {
             },
             ApiError::NotFound { resource, name } => format!("{resource} \"{name}\" not found"),
             ApiError::AlreadyExists { resource, name } => format!("{resource} \"{name}\" already exists"),
+            ApiError::Patch(message) => message.clone(),
             ApiError::Store(e) => e.to_string(),
         }
     }

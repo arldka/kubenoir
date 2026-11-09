@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  labels:
+    app: web
+  finalizers:
+  - example.com/a
+  - example.com/b
+spec:
+  containers:
+  - name: app
+    image: web:1
+    args:
+    - --port
+    - '8080'
+  tolerations:
+  - key: gpu
+    operator: Exists

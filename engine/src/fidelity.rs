@@ -15,3 +15,24 @@ pub fn strategic_merge(live: &str, patch: &str) -> Result<Value, String> {
     let patch = parse("patch", patch)?;
     crate::smp::strategic_merge_patch(&live, &patch)
 }
+
+/// `kubectl apply -f` of `manifest` onto `live` (the stored object): `{patch, result}`, the
+/// patch kubectl sends (empty: `unchanged`, nothing sent) and the object after the API server
+/// merged it. A namespaced manifest without a namespace goes to `default`.
+pub fn apply(live: &str, manifest: &str) -> Result<Value, String> {
+    let live = parse("live object", live)?;
+    let mut config = parse("manifest", manifest)?;
+    let kind = config["kind"].as_str().unwrap_or_default().to_string();
+    if !matches!(kind.as_str(), "Namespace" | "Node") && config["metadata"]["namespace"].is_null() {
+        config["metadata"]["namespace"] = Value::String("default".into());
+    }
+    let modified = crate::manifests::modified_configuration(&config);
+    let original = live["metadata"]["annotations"][crate::manifests::LAST_APPLIED].as_str();
+    let patch = crate::smp::create_three_way_merge_patch(original, &modified, &live)?;
+    let result = if patch.as_object().is_some_and(|p| p.is_empty()) {
+        live.clone()
+    } else {
+        crate::smp::strategic_merge_patch(&live, &patch)?
+    };
+    Ok(serde_json::json!({ "patch": patch, "result": result }))
+}

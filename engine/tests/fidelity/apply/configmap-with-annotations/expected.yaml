@@ -1,0 +1,23 @@
+patch:
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","data":{"level":"info","mode":"prod","region":"eu"},"kind":"ConfigMap","metadata":{"annotations":{"owner":"ops"},"name":"settings","namespace":"default"}}
+      owner: ops
+result:
+  apiVersion: v1
+  data:
+    level: info
+    mode: prod
+    region: eu
+  kind: ConfigMap
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","data":{"level":"info","mode":"prod","region":"eu"},"kind":"ConfigMap","metadata":{"annotations":{"owner":"ops"},"name":"settings","namespace":"default"}}
+      owner: ops
+    creationTimestamp: "2026-11-01T09:00:00Z"
+    name: settings
+    namespace: default
+    resourceVersion: "4242"
+    uid: 0f1e2d3c-0000-4000-8000-000000000001

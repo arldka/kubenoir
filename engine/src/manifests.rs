@@ -15,6 +15,7 @@ use crate::judge::Touched;
 use crate::mutate::{delete_named, delete_object, Deleted};
 use crate::parser::ManifestArgs;
 use crate::scenario::DEFAULT_NAMESPACE;
+use crate::smp;
 use crate::store::StoreError;
 
 /// The annotation `kubectl apply` keeps its last configuration in.
@@ -211,41 +212,21 @@ pub fn apply(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Writte
     Ok(Written::report(lines, errors, touched))
 }
 
-/// Apply one document: create it, or three-way merge it into what is stored. A failure says
-/// which of the two it was (`creating` / `patching`).
+/// Apply one document the way kubectl does client side: create it, or send the strategic merge
+/// patch `CreateThreeWayMergePatch(last-applied, new configuration, live)` (an empty one is not
+/// sent: `unchanged`). A failure says which of the two it was (`creating` / `patching`).
 fn apply_one(doc: &Doc, env: &Env<'_>) -> Result<(Vec<String>, &'static str), (&'static str, ApiError)> {
     let creating = |e| ("creating", e);
+    let patching = |e| ("patching", e);
     let kind = doc.manifest["kind"].as_str().unwrap_or_default();
     let api_version = doc.manifest["apiVersion"].as_str().unwrap_or_default();
     let info = api::kind_for(kind, api_version).ok_or_else(|| creating(api::kind_error(kind, api_version)))?;
 
-    // What kubectl records as the configuration: the document as written, namespace filled in.
     let mut config = doc.manifest.clone();
-    // `get_mut`, not indexing: indexing a missing key mutably inserts a `null` there.
-    if let Some(meta) = config.get_mut("metadata").and_then(Value::as_object_mut) {
-        if let Some(Value::Object(annotations)) = meta.get_mut("annotations") {
-            annotations.remove(LAST_APPLIED);
-            if annotations.is_empty() {
-                meta.remove("annotations");
-            }
-        }
-    }
     if info.namespaced {
         config["metadata"]["namespace"] = Value::String(doc.namespace.clone());
     }
-    let mut desired = config.clone();
-    let annotations = desired["metadata"]
-        .as_object_mut()
-        .map(|m| m.entry("annotations").or_insert_with(|| Value::Object(Map::new())));
-    if let Some(Value::Object(annotations)) = annotations {
-        annotations.insert(
-            LAST_APPLIED.into(),
-            Value::String(format!(
-                "{}\n",
-                serde_json::to_string(&config).map_err(|e| creating(e.into()))?
-            )),
-        );
-    }
+    let modified = modified_configuration(&config);
 
     let stored_namespace = if info.namespaced { doc.namespace.as_str() } else { "" };
     let live = env
@@ -253,7 +234,7 @@ fn apply_one(doc: &Doc, env: &Env<'_>) -> Result<(Vec<String>, &'static str), (&
         .get(info.kind, stored_namespace, doc.name())
         .map_err(|e| creating(e.into()))?;
     let Some(live) = live else {
-        let created = api::create(env.store, &desired, &doc.namespace, env.now, Origin::Client).map_err(creating)?;
+        let created = api::create(env.store, &modified, &doc.namespace, env.now, Origin::Client).map_err(creating)?;
         return Ok((
             vec![format!("{}/{} created", info.name_prefix(), created.name)],
             info.kind,
@@ -261,48 +242,64 @@ fn apply_one(doc: &Doc, env: &Env<'_>) -> Result<(Vec<String>, &'static str), (&
     };
 
     let mut out = Vec::new();
-    let last: Option<Value> = live["metadata"]["annotations"][LAST_APPLIED]
-        .as_str()
-        .and_then(|text| serde_json::from_str(text).ok());
-    if last.is_none() {
+    let original = live["metadata"]["annotations"][LAST_APPLIED].as_str();
+    if original.is_none() {
         out.push(format!(
             "Warning: resource {}/{} is missing the {LAST_APPLIED} annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.",
             info.plural,
             doc.name()
         ));
     }
-    let mut merged = live.clone();
-    three_way_merge(&mut merged, last.as_ref(), &desired);
-    let updated = api::update(env.store, &merged, &doc.namespace).map_err(|e| ("patching", e))?;
-    let verb = if updated.changed { "configured" } else { "unchanged" };
-    out.push(format!("{}/{} {verb}", info.name_prefix(), updated.name));
+    let patch =
+        smp::create_three_way_merge_patch(original, &modified, &live).map_err(|e| patching(ApiError::Patch(e)))?;
+    if patch.as_object().is_some_and(|p| p.is_empty()) {
+        out.push(format!("{}/{} unchanged", info.name_prefix(), doc.name()));
+        return Ok((out, info.kind));
+    }
+    let merged = smp::strategic_merge_patch(&live, &patch).map_err(|e| patching(ApiError::Patch(e)))?;
+    let updated = api::update(env.store, &merged, &doc.namespace).map_err(patching)?;
+    out.push(format!("{}/{} configured", info.name_prefix(), updated.name));
     Ok((out, info.kind))
 }
 
-/// Merge `desired` into `live` the way `kubectl apply` does for plain JSON: fields of `desired`
-/// win, fields the last applied configuration had but `desired` dropped are removed, and fields
-/// only `live` has (set by controllers or defaults) stay. Lists are replaced whole.
-fn three_way_merge(live: &mut Value, last: Option<&Value>, desired: &Value) {
-    let (Some(live_fields), Some(desired_fields)) = (live.as_object_mut(), desired.as_object()) else {
-        *live = desired.clone();
-        return;
+/// kubectl's `GetModifiedConfiguration(obj, annotate: true)`: the configuration with the
+/// last-applied annotation set to the configuration itself (serialized without that
+/// annotation, `annotations: {}` included when it was the only one or there were none).
+pub fn modified_configuration(manifest: &Value) -> Value {
+    let mut config = manifest.clone();
+    if !config["metadata"].is_object() {
+        config["metadata"] = Value::Object(Map::new());
+    }
+    let meta = config["metadata"].as_object_mut().expect("just made an object");
+    let mut annotations = match meta.remove("annotations") {
+        Some(Value::Object(annotations)) => annotations,
+        _ => Map::new(),
     };
-    if let Some(last_fields) = last.and_then(Value::as_object) {
-        for key in last_fields.keys() {
-            if !desired_fields.contains_key(key) {
-                live_fields.remove(key);
-            }
+    annotations.remove(LAST_APPLIED);
+    meta.insert("annotations".into(), Value::Object(annotations.clone()));
+    let encoded = go_json(&config);
+    annotations.insert(LAST_APPLIED.into(), Value::String(encoded));
+    config["metadata"]["annotations"] = Value::Object(annotations);
+    config
+}
+
+/// What Go's `json.Encoder` writes for a decoded object: sorted keys, `<`, `>`, `&`, U+2028 and
+/// U+2029 escaped, and a trailing newline.
+fn go_json(value: &Value) -> String {
+    let text = serde_json::to_string(value).expect("JSON values serialize");
+    let mut out = String::with_capacity(text.len() + 1);
+    for c in text.chars() {
+        match c {
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c => out.push(c),
         }
     }
-    for (key, value) in desired_fields {
-        let last_value = last.and_then(|l| l.get(key));
-        match live_fields.get_mut(key) {
-            Some(existing) if existing.is_object() && value.is_object() => three_way_merge(existing, last_value, value),
-            _ => {
-                live_fields.insert(key.clone(), value.clone());
-            }
-        }
-    }
+    out.push('\n');
+    out
 }
 
 pub fn delete(args: &ManifestArgs, env: &Env<'_>, files: &Files) -> Result<Written, StoreError> {

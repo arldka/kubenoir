@@ -1,0 +1,69 @@
+patch:
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"team":"shop"},"name":"shop","namespace":"default"},"spec":{"replicas":2,"selector":{"matchLabels":{"app":"shop"}},"template":{"metadata":{"labels":{"app":"shop"}},"spec":{"containers":[{"env":[{"name":"DB_HOST","value":"db"},{"name":"MODE","value":"prod"}],"image":"shop:1.0","name":"app","ports":[{"containerPort":8080}]},{"image":"proxy:2","name":"proxy"}],"volumes":[{"emptyDir":{},"name":"cache"}]}}}}
+    labels:
+      app: null
+      team: shop
+result:
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"team":"shop"},"name":"shop","namespace":"default"},"spec":{"replicas":2,"selector":{"matchLabels":{"app":"shop"}},"template":{"metadata":{"labels":{"app":"shop"}},"spec":{"containers":[{"env":[{"name":"DB_HOST","value":"db"},{"name":"MODE","value":"prod"}],"image":"shop:1.0","name":"app","ports":[{"containerPort":8080}]},{"image":"proxy:2","name":"proxy"}],"volumes":[{"emptyDir":{},"name":"cache"}]}}}}
+    creationTimestamp: "2026-11-01T09:00:00Z"
+    generation: 3
+    labels:
+      team: shop
+    name: shop
+    namespace: default
+    resourceVersion: "4242"
+    uid: 0f1e2d3c-0000-4000-8000-000000000001
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 2
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app: shop
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 25%
+      type: RollingUpdate
+    template:
+      metadata:
+        labels:
+          app: shop
+      spec:
+        containers:
+        - env:
+          - name: DB_HOST
+            value: db
+          - name: MODE
+            value: prod
+          image: shop:1.0
+          imagePullPolicy: IfNotPresent
+          name: app
+          ports:
+          - containerPort: 8080
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+        - image: proxy:2
+          imagePullPolicy: IfNotPresent
+          name: proxy
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        volumes:
+        - emptyDir: {}
+          name: cache
+  status:
+    observedGeneration: 3
+    readyReplicas: 2
+    replicas: 2

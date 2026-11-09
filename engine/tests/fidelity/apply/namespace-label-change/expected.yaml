@@ -1,0 +1,22 @@
+patch:
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","kind":"Namespace","metadata":{"annotations":{},"labels":{"team":"payments"},"name":"payments"}}
+    labels:
+      team: payments
+result:
+  apiVersion: v1
+  kind: Namespace
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"v1","kind":"Namespace","metadata":{"annotations":{},"labels":{"team":"payments"},"name":"payments"}}
+    creationTimestamp: "2026-11-01T09:00:00Z"
+    labels:
+      team: payments
+    name: payments
+    resourceVersion: "4242"
+    uid: 0f1e2d3c-0000-4000-8000-000000000001
+  status:
+    phase: Active
