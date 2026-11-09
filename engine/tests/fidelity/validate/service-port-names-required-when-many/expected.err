@@ -1,0 +1,2 @@
+spec.ports[0].name: Required value
+spec.ports[1].name: Required value

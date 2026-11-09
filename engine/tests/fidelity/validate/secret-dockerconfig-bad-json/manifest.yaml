@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/dockerconfigjson
+metadata:
+  name: pull
+  namespace: default
+data:
+  .dockerconfigjson: bm90IGpzb24=

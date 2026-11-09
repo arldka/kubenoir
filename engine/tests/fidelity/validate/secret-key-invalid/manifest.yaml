@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: creds
+  namespace: default
+data:
+  ../x: eA==

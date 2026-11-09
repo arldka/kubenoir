@@ -157,7 +157,9 @@ fn patch_errors() {
     );
     let out = e.eval(r#"kubectl patch deployment web -p '{"spec":{"selector":{"matchLabels":{"app":"other"}},"template":{"metadata":{"labels":{"app":"other"}}}}}'"#);
     assert!(
-        out.starts_with("The Deployment \"web\" is invalid: spec.selector: Invalid value: v1.LabelSelector{MatchLabels:map[string]string{\"app\":\"other\"}"),
+        out.starts_with(
+            "The Deployment \"web\" is invalid: spec.selector: Invalid value: {\"matchLabels\":{\"app\":\"other\"}}"
+        ),
         "{out}"
     );
     assert!(out.ends_with("field is immutable"), "{out}");

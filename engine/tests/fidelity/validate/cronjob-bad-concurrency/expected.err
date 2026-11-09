@@ -1,0 +1,1 @@
+spec.concurrencyPolicy: Unsupported value: "Sometimes": supported values: "Allow", "Forbid", "Replace"

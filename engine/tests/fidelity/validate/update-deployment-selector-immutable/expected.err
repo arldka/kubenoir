@@ -1,0 +1,1 @@
+spec.selector: Invalid value: {"matchLabels":{"app":"shop","v":"2"}}: field is immutable

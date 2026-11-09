@@ -1,0 +1,1 @@
+spec.containers[1].name: Duplicate value: "app"

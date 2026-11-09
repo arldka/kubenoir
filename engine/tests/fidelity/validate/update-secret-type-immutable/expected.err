@@ -1,0 +1,3 @@
+type: Invalid value: "kubernetes.io/basic-auth": field is immutable
+data[username]: Required value
+data[password]: Required value

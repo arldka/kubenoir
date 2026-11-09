@@ -382,12 +382,10 @@ fn a_mount_must_name_a_volume_and_say_where() {
         ),
     );
     assert!(out.contains("spec.volumes[1].name: Duplicate value: \"v\""), "{out}");
-    let out = apply(&mut e, &pod("api", "watch:1", "/x", "[]", "[{name: v}]"));
-    assert!(
-        out.contains("spec.volumes[0]: Required value: must specify a volume type"),
-        "{out}"
-    );
     assert_eq!(e.eval("kubectl get pods"), "No resources found in default namespace.");
+    // A volume with no source is defaulted to an emptyDir (`SetDefaults_Volume`).
+    let out = apply(&mut e, &pod("api", "watch:1", "/x", "[]", "[{name: v}]"));
+    assert_eq!(out, "pod/api created");
 }
 
 #[test]

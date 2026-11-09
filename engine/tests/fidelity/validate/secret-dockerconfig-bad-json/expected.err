@@ -1,0 +1,1 @@
+data[.dockerconfigjson]: Invalid value: "<secret contents redacted>": invalid character 'o' in literal null (expecting 'u')

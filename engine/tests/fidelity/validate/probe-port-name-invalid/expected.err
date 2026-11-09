@@ -1,0 +1,2 @@
+spec.containers[0].livenessProbe.httpGet.port: Invalid value: "HTTP_PORT": must contain only alpha-numeric characters (a-z, 0-9), and hyphens (-)
+spec.containers[0].livenessProbe.httpGet.port: Invalid value: "HTTP_PORT": must contain at least one letter (a-z)

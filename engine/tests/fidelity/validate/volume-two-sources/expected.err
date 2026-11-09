@@ -1,0 +1,1 @@
+spec.volumes[0].configMap: Forbidden: may not specify more than 1 volume type

@@ -1,0 +1,1 @@
+spec.containers: Forbidden: pod updates may not add or remove containers

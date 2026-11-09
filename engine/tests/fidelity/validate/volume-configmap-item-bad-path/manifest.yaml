@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: default
+spec:
+  containers:
+  - name: app
+    image: shop:1.0
+  volumes:
+  - name: a
+    configMap:
+      name: cm
+      items:
+      - key: k
+        path: ../x

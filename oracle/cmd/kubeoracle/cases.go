@@ -21,6 +21,7 @@ var areas = map[string]area{
 	"patch":    patchCase,
 	"apply":    applyCase,
 	"defaults": defaultsCase,
+	"validate": validateCase,
 }
 
 // goldens runs every case of every area under root (`<root>/<area>/<case>/`). Expected files

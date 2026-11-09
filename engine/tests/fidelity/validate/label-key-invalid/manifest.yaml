@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: default
+  labels:
+    app/name/x: a
+spec:
+  containers:
+  - name: app
+    image: shop:1.0

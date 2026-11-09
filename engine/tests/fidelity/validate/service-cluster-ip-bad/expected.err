@@ -1,0 +1,1 @@
+spec.clusterIPs[0]: Invalid value: "300.1.1.1": must be a valid IP address, (e.g. 10.9.8.7 or 2001:db8::ffff)

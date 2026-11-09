@@ -1,0 +1,1 @@
+spec.clusterIPs[0]: Invalid value: ["10.96.0.11"]: may not change once set

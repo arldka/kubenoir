@@ -1,0 +1,1 @@
+spec.tolerations[0].operator: Unsupported value: "Like": supported values: "Equal", "Exists"

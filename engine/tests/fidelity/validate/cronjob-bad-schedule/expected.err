@@ -1,0 +1,1 @@
+spec.schedule: Invalid value: "every day": expected exactly 5 fields, found 2: [every day]

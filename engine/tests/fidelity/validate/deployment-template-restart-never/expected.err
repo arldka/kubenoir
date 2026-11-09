@@ -1,0 +1,1 @@
+spec.template.spec.restartPolicy: Unsupported value: "Never": supported values: "Always"

@@ -1,0 +1,2 @@
+spec.ports[0].targetPort: Invalid value: "HTTP": must contain only alpha-numeric characters (a-z, 0-9), and hyphens (-)
+spec.ports[0].targetPort: Invalid value: "HTTP": must contain at least one letter (a-z)

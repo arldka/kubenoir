@@ -1,0 +1,1 @@
+spec.containers[0].livenessProbe.successThreshold: Invalid value: 2: must be 1

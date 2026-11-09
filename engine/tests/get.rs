@@ -74,7 +74,7 @@ spec:
   clusterIP: 10.96.0.20
   selector: {app: informant, tier: front}
   ports:
-  - {port: 80, targetPort: 8080}
+  - {port: 80, targetPort: 8080, name: http}
   - {port: 443, name: tls}
 ---
 apiVersion: v1

@@ -1,0 +1,1 @@
+spec.template.metadata.labels: Invalid value: {"app":"other"}: `selector` does not match template `labels`

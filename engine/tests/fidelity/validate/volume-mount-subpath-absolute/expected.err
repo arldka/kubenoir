@@ -1,0 +1,1 @@
+spec.containers[0].volumeMounts.subPath: Invalid value: "/etc": must be a relative path

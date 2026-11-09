@@ -1,0 +1,1 @@
+spec.containers[0].livenessProbe: Required value: must specify a handler type

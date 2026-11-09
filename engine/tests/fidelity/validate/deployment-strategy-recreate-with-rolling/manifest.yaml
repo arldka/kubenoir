@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: shop
+  template:
+    metadata:
+      labels:
+        app: shop
+    spec:
+      containers:
+      - name: app
+        image: shop:1.0
+  strategy:
+    type: Recreate
+    rollingUpdate:
+      maxSurge: 1

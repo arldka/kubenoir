@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: default
+data:
+  k: x
+binaryData:
+  k: eA==

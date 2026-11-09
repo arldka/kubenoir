@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: default
+spec:
+  containers:
+  - name: app
+    image: shop:1.0
+  tolerations:
+  - key: a
+    operator: Exists
+  - key: b
+    operator: Exists

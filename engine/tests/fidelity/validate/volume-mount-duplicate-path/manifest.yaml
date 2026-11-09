@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: default
+spec:
+  containers:
+  - name: app
+    image: shop:1.0
+    volumeMounts:
+    - name: a
+      mountPath: /x
+    - name: b
+      mountPath: /x
+  volumes:
+  - name: a
+    emptyDir: {}
+  - name: b
+    emptyDir: {}

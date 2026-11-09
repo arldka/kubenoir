@@ -1,0 +1,1 @@
+spec.restartPolicy: Unsupported value: "Sometimes": supported values: "Always", "OnFailure", "Never"

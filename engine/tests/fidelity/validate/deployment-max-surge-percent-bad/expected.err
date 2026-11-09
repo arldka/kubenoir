@@ -1,0 +1,1 @@
+spec.strategy.rollingUpdate.maxSurge: Invalid value: "150": a valid percent string must be a numeric string followed by an ending '%' (e.g. '1%',  or '93%', regex used for validation is '[0-9]+%')

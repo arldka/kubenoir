@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: default
+spec:
+  containers:
+  - name: app
+    image: shop:1.0
+    livenessProbe:
+      periodSeconds: 5

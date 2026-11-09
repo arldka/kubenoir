@@ -1,0 +1,1 @@
+spec.containers[0].imagePullPolicy: Unsupported value: "Sometimes": supported values: "Always", "IfNotPresent", "Never"

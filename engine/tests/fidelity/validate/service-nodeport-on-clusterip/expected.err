@@ -1,0 +1,1 @@
+spec.ports[0].nodePort: Forbidden: may not be used when `type` is 'ClusterIP'

@@ -38,6 +38,8 @@ mod shell;
 mod sim;
 mod smp;
 mod store;
+mod tznames;
+mod validation;
 
 pub use apps::AppSet;
 pub use judge::Status;

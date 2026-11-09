@@ -1,0 +1,2 @@
+spec.containers[0].readinessProbe.initialDelaySeconds: Invalid value: -1: must be greater than or equal to 0
+spec.containers[0].readinessProbe.timeoutSeconds: Invalid value: -2: must be greater than or equal to 0

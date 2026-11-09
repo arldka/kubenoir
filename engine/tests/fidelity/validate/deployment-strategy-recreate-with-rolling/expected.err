@@ -1,0 +1,1 @@
+spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy `type` is 'Recreate'

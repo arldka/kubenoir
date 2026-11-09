@@ -1,0 +1,1 @@
+spec.progressDeadlineSeconds: Invalid value: 5: must be greater than minReadySeconds

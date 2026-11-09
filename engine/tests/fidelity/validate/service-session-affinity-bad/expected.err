@@ -1,0 +1,1 @@
+spec.sessionAffinity: Unsupported value: "Sticky": supported values: "ClientIP", "None"

@@ -128,3 +128,12 @@ fn defaults_match_upstream() {
         engine::fidelity::defaults(&read(case, "manifest.yaml"))
     });
 }
+
+#[test]
+fn validation_matches_upstream() {
+    run_area("validate", |case| {
+        let old = case.join("old.yaml");
+        let old = old.exists().then(|| read(case, "old.yaml"));
+        engine::fidelity::validate(&read(case, "manifest.yaml"), old.as_deref())
+    });
+}

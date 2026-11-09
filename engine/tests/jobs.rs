@@ -128,7 +128,8 @@ fn a_job_must_not_restart_forever() {
     let always = "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: x\nspec:\n  template:\n    spec:\n      containers:\n      - {name: m, image: 'ok:1'}\n";
     let out = apply(&mut e, always);
     assert!(
-        out.contains("spec.template.spec.restartPolicy: Unsupported value: \"Always\""),
+        // Defaulted to Always, which upstream reports as a missing value.
+        out.contains("spec.template.spec.restartPolicy: Required value: valid values: \"OnFailure\", \"Never\""),
         "{out}"
     );
 }

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: s
+  namespace: default
+immutable: true
+data:
+  a: '1'

@@ -5,6 +5,7 @@
 //
 //	kubeoracle goldens <fidelity dir>   write expected.* for every case of every area
 //	kubeoracle gotypes <file.rs>        write the engine's Go type graph (patch tags, JSON options)
+//	kubeoracle tznames <file.rs>        write the time zone names Go knows
 package main
 
 import (
@@ -21,13 +22,15 @@ func main() {
 
 func run(args []string) error {
 	if len(args) != 2 {
-		return fmt.Errorf("usage: kubeoracle goldens <fidelity dir> | kubeoracle gotypes <file.rs>")
+		return fmt.Errorf("usage: kubeoracle goldens <fidelity dir> | kubeoracle gotypes|tznames <file.rs>")
 	}
 	switch args[0] {
 	case "goldens":
 		return goldens(args[1])
 	case "gotypes":
 		return gotypes(args[1])
+	case "tznames":
+		return tznames(args[1])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

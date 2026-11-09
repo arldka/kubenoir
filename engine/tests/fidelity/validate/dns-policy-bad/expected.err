@@ -1,0 +1,1 @@
+spec.dnsPolicy: Unsupported value: "Google": supported values: "ClusterFirstWithHostNet", "ClusterFirst", "Default", "None"

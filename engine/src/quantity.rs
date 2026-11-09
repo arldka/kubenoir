@@ -298,6 +298,18 @@ impl Quantity {
         format!("{amount}{suffix}")
     }
 
+    /// The value's sign: -1, 0 or 1.
+    pub fn sign(&self) -> i32 {
+        self.unscaled.signum() as i32
+    }
+
+    /// `Cmp`: the order of two quantities' values.
+    pub fn cmp(&self, other: &Quantity) -> std::cmp::Ordering {
+        let scale = self.scale.min(other.scale);
+        let widen = |q: &Quantity| q.unscaled.saturating_mul(pow10((q.scale - scale) as u32));
+        widen(self).cmp(&widen(other))
+    }
+
     /// |value| < n.
     fn abs_lt(unscaled: i128, scale: i32, n: i128) -> bool {
         if scale >= 0 {

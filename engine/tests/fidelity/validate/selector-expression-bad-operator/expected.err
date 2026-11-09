@@ -1,0 +1,2 @@
+spec.selector.matchExpressions[0].operator: Invalid value: "Like": not a valid selector operator
+spec.selector: Invalid value: {"matchExpressions":[{"key":"app","operator":"Like","values":["shop"]}]}: invalid label selector

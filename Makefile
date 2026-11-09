@@ -77,12 +77,14 @@ e2e: $(WASM) registry ## Play the game in a real browser (Playwright)
 FIDELITY := engine/tests/fidelity
 # Generated from upstream's Go types; checked in so the engine builds without Go.
 GOTYPES := engine/src/gotypes.rs
-GENERATED := $(FIDELITY) $(GOTYPES)
+TZNAMES := engine/src/tznames.rs
+GENERATED := $(FIDELITY) $(GOTYPES) $(TZNAMES)
 
 oracle-goldens: ## Regenerate the upstream fidelity goldens (needs Go)
 	@command -v go >/dev/null || { echo "oracle-goldens needs Go (version in oracle/go.mod)"; exit 1; }
 	cd oracle && go vet ./... && go run ./cmd/kubeoracle goldens ../$(FIDELITY)
 	cd oracle && go run ./cmd/kubeoracle gotypes ../$(GOTYPES)
+	cd oracle && go run ./cmd/kubeoracle tznames ../$(TZNAMES)
 
 fidelity: oracle-goldens ## Fail if the checked-in fidelity goldens are not what upstream produces
 	@git diff --exit-code -- $(GENERATED) || { echo "goldens are stale: run make oracle-goldens and review the diff"; exit 1; }

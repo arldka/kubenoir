@@ -1,0 +1,1 @@
+spec.containers[0].env[0].valueFrom.fieldRef.fieldPath: Invalid value: "spec.nope": error converting fieldPath: field label not supported: spec.nope

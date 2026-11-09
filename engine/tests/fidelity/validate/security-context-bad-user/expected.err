@@ -1,0 +1,1 @@
+spec.containers[0].securityContext.runAsUser: Invalid value: -1: must be between 0 and 2147483647, inclusive

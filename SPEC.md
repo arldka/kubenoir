@@ -95,6 +95,8 @@ Browser-only Rust/WASM k8s sim faithful enough → scenario cluster objects auth
 - V37: ∀ invalid manifest → error = upstream `ErrorList` aggregate as kubectl prints: `The <Kind> "<name>" is invalid: <field.path>: <Type>: <detail>` (multi → `[a, b]`); field paths & ordering upstream's.
 - V38: `describe` ∀ kind in C18 & `get` table|wide ∀ kind in C18 == kubectl text (columns, widths, `<none>`, ages from virtual clock, event aggregation `(xN over M)`).
 - V39: shell line semantics (word splitting, quoting, expansion order, exit status, stdout/stderr routing, `$?`) == mvdan.cc/sh for lines using only builtins; construct ∉ §I.shell subset → refused by name (V5), ⊥ partial run.
+- V40: ∀ write: order = typed decode (⊥ adds fields absent from manifest) → defaults → strategy prepare (Job selector+labels from uid, Service `clusterIPs` from `clusterIP`) → validate → store; ⊥ validate before defaults.
+- V41: CronJob schedule = robfig/cron v3 `ParseStandard` semantics & texts (dow 0-6, `?`, names, `@every <dur>`, field list printed `[a b]`); `timeZone` ∈ Go tz db (`tznames.rs`, generated).
 
 ## §T tasks
 
@@ -141,12 +143,17 @@ T40|x|`oracle/` Go module + `kubeoracle` skeleton, case-dir walker, `make oracle
 T41|x|patch meta: `kubeoracle patchmeta` → `engine/src/patchmeta.rs`; rewrite `strategic_merge` on it + directives; port upstream SMP cases into fidelity/patch|V34,I.engine,C18
 T42|x|apply 3-way merge on T41; fidelity/apply cases (removed field, foreign field kept, unchanged)|V35,V4,I.engine
 T43|x|defaulting port ∀ C18 kinds; fidelity/defaults (manifest → stored `-o yaml`)|V36,V2,C18
-T44|.|validation port ∀ C18 kinds (create + update, incl. pod update rules V3); fidelity/validate error texts|V37,V3,V1,C8
+T44|x|validation port ∀ C18 kinds (create + update, incl. pod update rules V3); fidelity/validate error texts|V37,V3,V1,C8
 T45|.|`get` printers ∀ C18 kinds port of `pkg/printers/internalversion` (table + wide); fidelity/get|V38,V6
 T46|.|`describe` ∀ C18 kinds port of `k8s.io/kubectl/pkg/describe`; fidelity/describe|V38
 T47|.|shell: parser + interpreter for §I.shell subset (lists, quoting, params, cmd subst, redirs, heredoc); keep builtins; fidelity/shell vs mvdan.cc/sh w/ same builtins stubbed|V39,V5,I.shell
 T48|.|docs: `docs/fidelity.md` (oracle, goldens, adding a case/kind), CLAUDE.md test bullet|C16,C17
+T49|.|internal-type JSON for messages that print internal Go structs: pod update `Forbidden` diff (`diff.Diff` of internal PodSpec), Job `spec.template` immutable, Service duplicate port key; generate internal type graph via `kubeoracle`; fidelity cases `update-pod-env-forbidden`, `update-job-template-immutable`|V37,V3,C16
 
 ## §B bugs
 
 id|date|cause|fix
+B1|2026-11-10|engine validated before defaulting w/ hand-written rules; typed roundtrip filled missing required fields (`selector: {}`); upstream order decode→default→prepare→validate|V40
+B2|2026-11-10|CronJob jobTemplate got Job defaults; pod templates got `enableServiceLinks`/requests-from-limits (Pod-only upstream); digest-pinned image → `Always` (upstream `IfNotPresent`)|V36
+B3|2026-11-10|cron parser accepted dow 7, rejected `@every`, own error texts|V41
+B4|2026-11-10|apply = hand-written JSON 3-way merge, lists replaced whole; `strategy: Recreate` kept defaulted `rollingUpdate`; last-applied lacked `annotations: {}`|V35

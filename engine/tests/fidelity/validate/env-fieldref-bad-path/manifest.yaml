@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: default
+spec:
+  containers:
+  - name: app
+    image: shop:1.0
+    env:
+    - name: A
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nope

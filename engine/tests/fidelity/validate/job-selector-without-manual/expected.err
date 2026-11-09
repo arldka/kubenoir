@@ -1,0 +1,2 @@
+spec.selector: Invalid value: {"matchLabels":{"a":"b","batch.kubernetes.io/controller-uid":"6f0f5c2e-0000-4000-8000-000000000001"}}: `selector` not auto-generated
+spec.template.metadata.labels: Invalid value: {"batch.kubernetes.io/controller-uid":"6f0f5c2e-0000-4000-8000-000000000001","batch.kubernetes.io/job-name":"migrate","controller-uid":"6f0f5c2e-0000-4000-8000-000000000001","job-name":"migrate"}: `selector` does not match template `labels`

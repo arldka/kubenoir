@@ -36,8 +36,6 @@ pub struct KindInfo {
     pub namespaced: bool,
     /// Whether `metadata.generation` tracks spec changes.
     has_generation: bool,
-    /// Whether a name must be a DNS-1123 label (no dots), not a subdomain.
-    label_name: bool,
     /// Decode into the kind's type and encode back: what the API server keeps of a manifest.
     roundtrip: fn(&Value) -> Result<Value, String>,
 }
@@ -69,7 +67,7 @@ fn roundtrip<K: DeserializeOwned + Serialize>(manifest: &Value) -> Result<Value,
 
 macro_rules! kind {
     ($ty:ty, $kind:literal, $group:literal, $av:literal, $plural:literal, $singular:literal,
-     [$($short:literal),*], namespaced: $ns:literal, generation: $generation:literal, label: $label:literal) => {
+     [$($short:literal),*], namespaced: $ns:literal, generation: $generation:literal) => {
         KindInfo {
             kind: $kind,
             api_version: $av,
@@ -79,7 +77,6 @@ macro_rules! kind {
             short_names: &[$($short),*],
             namespaced: $ns,
             has_generation: $generation,
-            label_name: $label,
             roundtrip: roundtrip::<$ty>,
         }
     };
@@ -92,20 +89,20 @@ use k8s_openapi::api::discovery::v1 as discovery;
 use k8s_openapi::api::networking::v1 as networking;
 
 static KINDS: [KindInfo; 14] = [
-    kind!(core::ConfigMap, "ConfigMap", "", "v1", "configmaps", "configmap", ["cm"], namespaced: true, generation: false, label: false),
-    kind!(batch::CronJob, "CronJob", "batch", "batch/v1", "cronjobs", "cronjob", ["cj"], namespaced: true, generation: true, label: false),
-    kind!(apps::Deployment, "Deployment", "apps", "apps/v1", "deployments", "deployment", ["deploy"], namespaced: true, generation: true, label: false),
-    kind!(core::Endpoints, "Endpoints", "", "v1", "endpoints", "endpoints", ["ep"], namespaced: true, generation: false, label: false),
-    kind!(discovery::EndpointSlice, "EndpointSlice", "discovery.k8s.io", "discovery.k8s.io/v1", "endpointslices", "endpointslice", [], namespaced: true, generation: false, label: false),
-    kind!(core::Event, "Event", "", "v1", "events", "event", ["ev"], namespaced: true, generation: false, label: false),
-    kind!(batch::Job, "Job", "batch", "batch/v1", "jobs", "job", [], namespaced: true, generation: true, label: false),
-    kind!(core::Namespace, "Namespace", "", "v1", "namespaces", "namespace", ["ns"], namespaced: false, generation: false, label: true),
-    kind!(networking::NetworkPolicy, "NetworkPolicy", "networking.k8s.io", "networking.k8s.io/v1", "networkpolicies", "networkpolicy", ["netpol"], namespaced: true, generation: false, label: false),
-    kind!(core::Node, "Node", "", "v1", "nodes", "node", ["no"], namespaced: false, generation: false, label: false),
-    kind!(core::Pod, "Pod", "", "v1", "pods", "pod", ["po"], namespaced: true, generation: true, label: false),
-    kind!(apps::ReplicaSet, "ReplicaSet", "apps", "apps/v1", "replicasets", "replicaset", ["rs"], namespaced: true, generation: true, label: false),
-    kind!(core::Secret, "Secret", "", "v1", "secrets", "secret", [], namespaced: true, generation: false, label: false),
-    kind!(core::Service, "Service", "", "v1", "services", "service", ["svc"], namespaced: true, generation: false, label: true),
+    kind!(core::ConfigMap, "ConfigMap", "", "v1", "configmaps", "configmap", ["cm"], namespaced: true, generation: false),
+    kind!(batch::CronJob, "CronJob", "batch", "batch/v1", "cronjobs", "cronjob", ["cj"], namespaced: true, generation: true),
+    kind!(apps::Deployment, "Deployment", "apps", "apps/v1", "deployments", "deployment", ["deploy"], namespaced: true, generation: true),
+    kind!(core::Endpoints, "Endpoints", "", "v1", "endpoints", "endpoints", ["ep"], namespaced: true, generation: false),
+    kind!(discovery::EndpointSlice, "EndpointSlice", "discovery.k8s.io", "discovery.k8s.io/v1", "endpointslices", "endpointslice", [], namespaced: true, generation: false),
+    kind!(core::Event, "Event", "", "v1", "events", "event", ["ev"], namespaced: true, generation: false),
+    kind!(batch::Job, "Job", "batch", "batch/v1", "jobs", "job", [], namespaced: true, generation: true),
+    kind!(core::Namespace, "Namespace", "", "v1", "namespaces", "namespace", ["ns"], namespaced: false, generation: false),
+    kind!(networking::NetworkPolicy, "NetworkPolicy", "networking.k8s.io", "networking.k8s.io/v1", "networkpolicies", "networkpolicy", ["netpol"], namespaced: true, generation: false),
+    kind!(core::Node, "Node", "", "v1", "nodes", "node", ["no"], namespaced: false, generation: false),
+    kind!(core::Pod, "Pod", "", "v1", "pods", "pod", ["po"], namespaced: true, generation: true),
+    kind!(apps::ReplicaSet, "ReplicaSet", "apps", "apps/v1", "replicasets", "replicaset", ["rs"], namespaced: true, generation: true),
+    kind!(core::Secret, "Secret", "", "v1", "secrets", "secret", [], namespaced: true, generation: false),
+    kind!(core::Service, "Service", "", "v1", "services", "service", ["svc"], namespaced: true, generation: false),
 ];
 
 /// Every known kind, sorted by kind name.
@@ -437,15 +434,20 @@ pub fn create(
         meta.remove("generation");
         object.as_object_mut().expect("object").remove("status");
     }
-    validate(info, &name, &object)?;
-
     let meta = object["metadata"].as_object_mut().expect("object");
     meta.entry("creationTimestamp")
         .or_insert_with(|| Value::String(clock::format(now)));
     if info.has_generation {
         meta.entry("generation").or_insert(json!(1));
     }
+    // The uid the store would give it, now: validation (a Job's selector) needs it.
+    if meta.get("uid").and_then(Value::as_str).is_none_or(str::is_empty) {
+        meta.insert("uid".into(), Value::String(names::uid(store.seed(), store.next_id())));
+    }
+    // What the API server does, in its order: decode (defaults), prepare, validate.
     apply_defaults(info, &name, &mut object);
+    prepare(info, &mut object);
+    invalid(info, &name, crate::validation::validate_create(info.kind, &object))?;
 
     if store.get(info.kind, &namespace, &name)?.is_some() {
         return Err(ApiError::AlreadyExists {
@@ -477,9 +479,31 @@ pub fn update(store: &ClusterStore, manifest: &Value, namespace: &str) -> Result
             name,
         });
     };
-    validate(info, &name, &object)?;
     apply_defaults(info, &name, &mut object);
-    validate_update(info, &name, &object, &current)?;
+    // Identity is the stored object's; a client that sends no resourceVersion updates
+    // unconditionally (the server fills in the current one).
+    let meta = object["metadata"].as_object_mut().expect("object");
+    for key in ["uid", "creationTimestamp", "generation"] {
+        match current["metadata"].get(key) {
+            Some(value) => meta.insert(key.into(), value.clone()),
+            None => meta.remove(key),
+        };
+    }
+    if meta
+        .get("resourceVersion")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        if let Some(version) = current["metadata"].get("resourceVersion") {
+            meta.insert("resourceVersion".into(), version.clone());
+        }
+    }
+    prepare(info, &mut object);
+    invalid(
+        info,
+        &name,
+        crate::validation::validate_update(info.kind, &object, &current),
+    )?;
 
     let fields = object.as_object_mut().expect("object");
     match current.get("status") {
@@ -584,6 +608,9 @@ pub(crate) fn admit(manifest: &Value, namespace: &str) -> Result<(&'static KindI
     if let Some(field) = first_unknown_field(manifest, &object, "") {
         return Err(bad_request(format!("strict decoding error: unknown field \"{field}\"")));
     }
+    // The typed round trip fills required fields the manifest left out (`selector: {}`); Go
+    // leaves them unset, which validation reports ("spec.selector: Required value").
+    prune_to(manifest, &mut object);
     let fields = object
         .as_object_mut()
         .ok_or_else(|| bad_request("not an object".into()))?;
@@ -630,39 +657,26 @@ fn first_unknown_field(input: &Value, decoded: &Value, path: &str) -> Option<Str
 
 // ---- validation -------------------------------------------------------------------------------
 
-const SUBDOMAIN_HELP: &str = "a lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters, '-' or '.', and must start and end with an alphanumeric character (e.g. 'example.com', regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*')";
-const LABEL_HELP: &str = "a lowercase RFC 1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character (e.g. 'my-name',  or '123-abc', regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?')";
-
-fn is_dns_label(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 63
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && !s.starts_with('-')
-        && !s.ends_with('-')
-}
-
-fn is_dns_subdomain(s: &str) -> bool {
-    s.len() <= 253 && s.split('.').all(is_dns_label)
-}
-
-fn validate(info: &KindInfo, name: &str, object: &Value) -> Result<(), ApiError> {
-    let mut causes = Vec::new();
-    if name.is_empty() {
-        causes.push("metadata.name: Required value: name or generateName is required".to_string());
-    } else if info.label_name && !is_dns_label(name) {
-        causes.push(format!("metadata.name: Invalid value: \"{name}\": {LABEL_HELP}"));
-    } else if !info.label_name && !is_dns_subdomain(name) {
-        causes.push(format!("metadata.name: Invalid value: \"{name}\": {SUBDOMAIN_HELP}"));
-    }
-    match info.kind {
-        "Pod" => validate_pod_spec(&object["spec"], "spec", &mut causes),
-        "Deployment" | "ReplicaSet" => validate_workload(&object["spec"], &mut causes),
-        "Service" => validate_service(&object["spec"], &mut causes),
-        "Job" => validate_job(&object["spec"], "spec", &mut causes),
-        "CronJob" => validate_cronjob(&object["spec"], &mut causes),
+/// Drop from `object` what `manifest` does not have (recursively, list items by position).
+fn prune_to(manifest: &Value, object: &mut Value) {
+    match (manifest, object) {
+        (Value::Object(m), Value::Object(o)) => {
+            o.retain(|k, _| m.contains_key(k));
+            for (k, v) in o.iter_mut() {
+                prune_to(&m[k], v);
+            }
+        }
+        (Value::Array(m), Value::Array(o)) => {
+            for (mi, oi) in m.iter().zip(o.iter_mut()) {
+                prune_to(mi, oi);
+            }
+        }
         _ => {}
     }
+}
+
+/// An `Invalid` error for these causes, if there are any.
+fn invalid(info: &KindInfo, name: &str, causes: Vec<String>) -> Result<(), ApiError> {
     if causes.is_empty() {
         Ok(())
     } else {
@@ -674,234 +688,26 @@ fn validate(info: &KindInfo, name: &str, object: &Value) -> Result<(), ApiError>
     }
 }
 
-fn validate_pod_spec(spec: &Value, path: &str, causes: &mut Vec<String>) {
-    let containers = spec["containers"].as_array().map(Vec::as_slice).unwrap_or_default();
-    if containers.is_empty() {
-        causes.push(format!("{path}.containers: Required value"));
-    }
-    let volumes = spec["volumes"].as_array().map(Vec::as_slice).unwrap_or_default();
-    let mut volume_names: Vec<&str> = Vec::new();
-    for (i, volume) in volumes.iter().enumerate() {
-        let name = volume["name"].as_str().unwrap_or_default();
-        if name.is_empty() {
-            causes.push(format!("{path}.volumes[{i}].name: Required value"));
-        } else if volume_names.contains(&name) {
-            causes.push(format!("{path}.volumes[{i}].name: Duplicate value: \"{name}\""));
-        } else if !is_dns_label(name) {
-            causes.push(format!(
-                "{path}.volumes[{i}].name: Invalid value: \"{name}\": {LABEL_HELP}"
-            ));
-        }
-        volume_names.push(name);
-        if volume.as_object().is_some_and(|fields| fields.len() < 2) {
-            causes.push(format!(
-                "{path}.volumes[{i}]: Required value: must specify a volume type"
-            ));
-        }
-    }
-    for (field, list) in [
-        ("containers", containers),
-        (
-            "initContainers",
-            spec["initContainers"].as_array().map(Vec::as_slice).unwrap_or_default(),
-        ),
-    ] {
-        for (i, container) in list.iter().enumerate() {
-            for (j, mount) in container["volumeMounts"].as_array().into_iter().flatten().enumerate() {
-                let at = format!("{path}.{field}[{i}].volumeMounts[{j}]");
-                let mounted = mount["name"].as_str().unwrap_or_default();
-                if !volume_names.contains(&mounted) {
-                    causes.push(format!("{at}.name: Not found: \"{mounted}\""));
-                }
-                if mount["mountPath"].as_str().unwrap_or_default().is_empty() {
-                    causes.push(format!("{at}.mountPath: Required value"));
-                }
-            }
-            let name = container["name"].as_str().unwrap_or_default();
-            if name.is_empty() {
-                causes.push(format!("{path}.{field}[{i}].name: Required value"));
-            } else if !is_dns_label(name) {
-                causes.push(format!(
-                    "{path}.{field}[{i}].name: Invalid value: \"{name}\": {LABEL_HELP}"
-                ));
-            }
-            if container["image"].as_str().unwrap_or_default().is_empty() {
-                causes.push(format!("{path}.{field}[{i}].image: Required value"));
-            }
-        }
-    }
-}
-
-fn validate_workload(spec: &Value, causes: &mut Vec<String>) {
-    if let Some(replicas) = spec["replicas"].as_i64().filter(|r| *r < 0) {
-        causes.push(format!(
-            "spec.replicas: Invalid value: {replicas}: must be greater than or equal to 0"
-        ));
-    }
-    let selector = spec["selector"]["matchLabels"].as_object();
-    let has_expressions = spec["selector"]["matchExpressions"]
-        .as_array()
-        .is_some_and(|e| !e.is_empty());
-    if selector.is_none_or(Map::is_empty) && !has_expressions {
-        causes.push("spec.selector: Required value".into());
-    }
-    let labels = spec["template"]["metadata"]["labels"].as_object();
-    if let Some(selector) = selector {
-        let matches = selector.iter().all(|(k, v)| labels.and_then(|l| l.get(k)) == Some(v));
-        if !matches {
-            causes.push(format!(
-                "spec.template.metadata.labels: Invalid value: {}: `selector` does not match template `labels`",
-                go_map(labels)
-            ));
-        }
-    }
-    validate_pod_spec(&spec["template"]["spec"], "spec.template.spec", causes);
-}
-
-/// A Job's pod template must not restart containers forever.
-fn validate_job(spec: &Value, path: &str, causes: &mut Vec<String>) {
-    for (field, least) in [("completions", 0), ("parallelism", 0), ("backoffLimit", 0)] {
-        if let Some(n) = spec[field].as_i64().filter(|n| *n < least) {
-            causes.push(format!(
-                "{path}.{field}: Invalid value: {n}: must be greater than or equal to {least}"
-            ));
-        }
-    }
-    let policy = spec["template"]["spec"]["restartPolicy"].as_str().unwrap_or("Always");
-    if !matches!(policy, "OnFailure" | "Never") {
-        causes.push(format!(
-            "{path}.template.spec.restartPolicy: Unsupported value: \"{policy}\": supported values: \"OnFailure\", \"Never\""
-        ));
-    }
-    validate_pod_spec(&spec["template"]["spec"], &format!("{path}.template.spec"), causes);
-}
-
-fn validate_cronjob(spec: &Value, causes: &mut Vec<String>) {
-    match spec["schedule"].as_str() {
-        None | Some("") => causes.push("spec.schedule: Required value".into()),
-        Some(schedule) => {
-            if let Err(reason) = crate::cron::parse(schedule) {
-                causes.push(format!("spec.schedule: Invalid value: \"{schedule}\": {reason}"));
-            }
-        }
-    }
-    if let Some(policy) = spec["concurrencyPolicy"].as_str() {
-        if !matches!(policy, "Allow" | "Forbid" | "Replace") {
-            causes.push(format!(
-                "spec.concurrencyPolicy: Unsupported value: \"{policy}\": supported values: \"Allow\", \"Forbid\", \"Replace\""
-            ));
-        }
-    }
-    validate_job(&spec["jobTemplate"]["spec"], "spec.jobTemplate.spec", causes);
-}
-
-fn validate_service(spec: &Value, causes: &mut Vec<String>) {
-    let kind = spec["type"].as_str().unwrap_or("ClusterIP");
-    let ports = spec["ports"].as_array().map(Vec::as_slice).unwrap_or_default();
-    if kind != "ExternalName" && ports.is_empty() {
-        causes.push("spec.ports: Required value".into());
-    }
-    if kind == "ExternalName" && spec["externalName"].as_str().unwrap_or_default().is_empty() {
-        causes.push("spec.externalName: Required value".into());
-    }
-}
-
-/// A label map the way Go prints it in validation messages.
-fn go_map(labels: Option<&Map<String, Value>>) -> String {
-    let entries: Vec<String> = labels
-        .into_iter()
-        .flatten()
-        .map(|(k, v)| format!("{k:?}:{:?}", v.as_str().unwrap_or_default()))
-        .collect();
-    format!("map[string]string{{{}}}", entries.join(", "))
-}
-
-/// What kube-apiserver says when a pod update touches anything but the few mutable fields.
-pub const POD_UPDATE_FORBIDDEN: &str = "spec: Forbidden: pod updates may not change fields other than `spec.containers[*].image`, `spec.initContainers[*].image`, `spec.activeDeadlineSeconds`, `spec.tolerations` (only additions to existing tolerations), `spec.terminationGracePeriodSeconds` (allow it to be set to 1 if it was previously negative)";
-
-/// Rules about how an existing object may change (both sides already defaulted).
-fn validate_update(info: &KindInfo, name: &str, object: &Value, current: &Value) -> Result<(), ApiError> {
-    let mut causes = Vec::new();
+/// The registry strategies' `PrepareForCreate`/`PrepareForUpdate` steps validation depends on:
+/// a Job's generated selector and labels, and a Service's `clusterIPs` from its `clusterIP`
+/// (the Service REST handler's normalization).
+fn prepare(info: &KindInfo, object: &mut Value) {
     match info.kind {
-        "Pod" => {
-            if !pod_spec_change_allowed(&current["spec"], &object["spec"]) {
-                causes.push(POD_UPDATE_FORBIDDEN.to_string());
-            }
-        }
-        "Deployment" | "ReplicaSet" => {
-            let selector = &object["spec"]["selector"];
-            if *selector != current["spec"]["selector"] {
-                causes.push(format!(
-                    "spec.selector: Invalid value: {}: field is immutable",
-                    go_selector(selector)
-                ));
+        "Job" => crate::validation::generate_job_selector(object),
+        "Service" => {
+            let ip = object["spec"]["clusterIP"].as_str().unwrap_or_default().to_string();
+            let ips_empty = object["spec"]["clusterIPs"].as_array().is_none_or(Vec::is_empty);
+            if !ip.is_empty() && ips_empty {
+                object["spec"]["clusterIPs"] = json!([ip]);
             }
         }
         _ => {}
     }
-    if causes.is_empty() {
-        Ok(())
-    } else {
-        Err(ApiError::Invalid {
-            kind: info.kind,
-            name: name.to_string(),
-            causes,
-        })
-    }
 }
 
-/// Whether `new` differs from `old` only where a running pod may change: container and init
-/// container images, `activeDeadlineSeconds`, tolerations added at the end, and a grace period
-/// that was negative becoming 1.
-fn pod_spec_change_allowed(old: &Value, new: &Value) -> bool {
-    let mut old = old.clone();
-    let mut new = new.clone();
-    for field in ["containers", "initContainers"] {
-        let old_list = old[field].as_array().map_or(0, Vec::len);
-        let new_list = new[field].as_array().map_or(0, Vec::len);
-        if old_list != new_list {
-            return false;
-        }
-        for i in 0..old_list {
-            new[field][i]["image"] = old[field][i]["image"].clone();
-        }
-    }
-    new["activeDeadlineSeconds"] = old["activeDeadlineSeconds"].clone();
-    let old_tolerations = old["tolerations"].as_array().cloned().unwrap_or_default();
-    let new_tolerations = new["tolerations"].as_array().cloned().unwrap_or_default();
-    if new_tolerations.len() < old_tolerations.len() || new_tolerations[..old_tolerations.len()] != old_tolerations[..]
-    {
-        return false;
-    }
-    new["tolerations"] = old["tolerations"].clone();
-    let old_grace = old["terminationGracePeriodSeconds"].as_i64().unwrap_or(30);
-    if old_grace < 0 && new["terminationGracePeriodSeconds"] == json!(1) {
-        new["terminationGracePeriodSeconds"] = old["terminationGracePeriodSeconds"].clone();
-    }
-    // A field set to null and a field left out are the same to the API server.
-    strip_nulls(&mut old);
-    strip_nulls(&mut new);
-    old == new
-}
-
-fn strip_nulls(value: &mut Value) {
-    match value {
-        Value::Object(fields) => {
-            fields.retain(|_, v| !v.is_null());
-            fields.values_mut().for_each(strip_nulls);
-        }
-        Value::Array(items) => items.iter_mut().for_each(strip_nulls),
-        _ => {}
-    }
-}
-
-/// A label selector the way Go prints it in validation messages (`v1.LabelSelector{...}`).
-fn go_selector(selector: &Value) -> String {
-    format!(
-        "v1.LabelSelector{{MatchLabels:{}, MatchExpressions:[]v1.LabelSelectorRequirement(nil)}}",
-        go_map(selector["matchLabels"].as_object())
-    )
-}
+/// What kube-apiserver says when a pod update touches anything but the few mutable fields
+/// (upstream also appends a diff of the internal pod specs).
+pub const POD_UPDATE_FORBIDDEN: &str = "spec: Forbidden: pod updates may not change fields other than `spec.containers[*].image`,`spec.initContainers[*].image`,`spec.activeDeadlineSeconds`,`spec.tolerations` (only additions to existing tolerations),`spec.terminationGracePeriodSeconds` (allow it to be set to 1 if it was previously negative)";
 
 // ---- defaulting -------------------------------------------------------------------------------
 
@@ -1187,7 +993,11 @@ mod tests {
             &json!({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "a.b"}}),
         )
         .unwrap_err();
-        assert!(err.message().contains("a lowercase RFC 1123 label"), "{err}");
+        assert!(
+            err.message()
+                .contains("metadata.name: Invalid value: \"a.b\": must not contain dots"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1198,7 +1008,7 @@ mod tests {
         let err = create_client(&store, &manifest).unwrap_err();
         assert_eq!(
             err.message(),
-            "The Deployment \"api\" is invalid: spec.template.metadata.labels: Invalid value: map[string]string{\"app\":\"other\"}: `selector` does not match template `labels`"
+            "The Deployment \"api\" is invalid: spec.template.metadata.labels: Invalid value: {\"app\":\"other\"}: `selector` does not match template `labels`"
         );
         manifest["spec"].as_object_mut().unwrap().remove("selector");
         let err = create_client(&store, &manifest).unwrap_err();

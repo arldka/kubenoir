@@ -1,0 +1,1 @@
+spec.volumes[0].configMap.items[0].path: Invalid value: "../x": must not contain '..'

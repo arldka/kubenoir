@@ -1,0 +1,2 @@
+spec.ports[0].port: Invalid value: 0: must be between 1 and 65535, inclusive
+spec.ports[0].targetPort: Invalid value: 0: must be between 1 and 65535, inclusive

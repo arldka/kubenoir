@@ -1,0 +1,1 @@
+spec.policyTypes[0]: Unsupported value: "Inbound": supported values: "Ingress", "Egress"

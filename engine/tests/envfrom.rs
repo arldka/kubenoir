@@ -122,13 +122,13 @@ fn a_trailing_newline_in_a_secret_reaches_the_container() {
 #[test]
 fn env_from_with_prefixes_precedence_and_optional_sources() {
     let mut e = engine();
-    apply(&mut e, "cm.yaml", &format!("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: base\ndata:\n  DATABASE_URL: {GOOD_URL}\n  bad key: skipped\n  1abc: skipped too\n"));
+    apply(&mut e, "cm.yaml", &format!("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: base\ndata:\n  DATABASE_URL: {GOOD_URL}\n  1abc: skipped\n"));
     apply(&mut e, "pod.yaml", &pod("    envFrom:\n    - configMapRef: {name: base}\n    - configMapRef: {name: nope, optional: true}\n    - secretRef: {name: nada, optional: true}\n"));
     e.advance(10);
     assert!(logs(&mut e).contains("connected to"));
     let events = e.eval("kubectl get events");
     assert!(
-        events.contains("Keys [1abc, bad key] from the EnvFrom configMap default/base were skipped since they are considered invalid environment variable names."),
+        events.contains("Keys [1abc] from the EnvFrom configMap default/base were skipped since they are considered invalid environment variable names."),
         "{events}"
     );
 
@@ -294,15 +294,17 @@ fn pod_fields_are_available_to_the_container() {
         logs(&mut e)
     );
 
+    // A field the downward API does not offer: the API server refuses the pod.
     e.eval("kubectl delete pod api --force");
-    apply(
+    let out = apply(
         &mut e,
         "pod.yaml",
         &pod("    env:\n    - name: X\n      valueFrom: {fieldRef: {fieldPath: spec.nonsense}}\n"),
     );
-    e.advance(15);
-    assert_eq!(status(&mut e), "CreateContainerConfigError");
-    assert_eq!(waiting_message(&mut e), "unsupported fieldPath: spec.nonsense");
+    assert!(
+        out.contains("spec.containers[0].env[0].valueFrom.fieldRef.fieldPath: Invalid value: \"spec.nonsense\": error converting fieldPath: field label not supported: spec.nonsense"),
+        "{out}"
+    );
 
     e.eval("kubectl delete pod api --force");
     apply(

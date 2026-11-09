@@ -1,0 +1,1 @@
+spec.volumes[0].secret.secretName: Required value
