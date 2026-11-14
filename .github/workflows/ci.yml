@@ -73,12 +73,12 @@ jobs:
       - run: cargo build --manifest-path apps/Cargo.toml --release --target wasm32-wasip1
       - run: cargo run -q --manifest-path engine/Cargo.toml --bin scenario-check -- scenarios/*/scenario.json
       - run: bun scripts/build-registry.ts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wasm
           path: frontend/src/lib/wasm
           retention-days: 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: registry
           path: frontend/static/registry
@@ -133,7 +133,7 @@ jobs:
       - run: bun run test:e2e
         env:
           CI: "true"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-results
