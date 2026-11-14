@@ -7,7 +7,7 @@ Everything runs in your browser. The engine is Rust compiled to WASM: a simulate
 (ported from upstream Kubernetes validation, defaulting and `kubectl` behavior) that runs the
 containers' programs as WASM apps. No real cluster, no backend.
 
-**Live demo:** _add the workers.dev URL here after the first deploy_
+**Live demo:** https://kubenoir.arldka.cloud
 
 ## Quick start
 

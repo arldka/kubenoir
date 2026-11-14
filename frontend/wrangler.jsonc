@@ -1,6 +1,7 @@
 {
 	"name": "kubenoire",
 	"compatibility_date": "2026-11-14",
+	"routes": [{ "pattern": "kubenoir.arldka.cloud", "custom_domain": true }],
 	"assets": {
 		"directory": "./build",
 		"not_found_handling": "single-page-application"
