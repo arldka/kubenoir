@@ -1,4 +1,4 @@
-# Kubenoire
+# Kubenoir
 
 A browser-based Kubernetes detective game. You are the SRE on a noir case: read the briefing,
 investigate a broken cluster from a web terminal, and fix it before the 15 minutes are up.
