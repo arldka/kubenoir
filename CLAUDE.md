@@ -1,6 +1,7 @@
-# Project Instructions: Kubernetes Narrative Detective Game
+# Project Instructions: Kubenoire (Kubernetes noir detective game)
 
 ## Product Vision & Architecture
+- **Name**: Kubenoire; the lowercase `kubenoire` is used for repo and package names.
 - **Concept**: A 100% open-source, browser-based SRE/Kubernetes detective game. Players investigate and debug simulated incidents via a web terminal (`xterm.js`).
 - **Engine**: Rust compiled to WASM (`wasm-bindgen`). Runs a simulated in-browser Kubernetes control plane and SQLite state store using `k8s-openapi`.
 - **Container apps**: what a container does is a real program, a template app in `apps/` (its own cargo workspace, `wasm32-wasip1`), run with `wasmi` against a virtual clock (`engine/src/apps/`). Apps are versioned artifacts (`name@version`, immutable once published): the browser engine is given them (`AppSet`), fetched from an app registry; native builds embed the local builds (`bundled-apps` feature, `engine/build.rs`). Scenarios pick a template per image and configure it; see `docs/apps.md`. Template config describes the app; behavior lives in the app's code, never in `when/then` tables. Networking is not simulated as packets: the engine's connectivity oracle (`engine/src/net/`) answers a connection from the cluster's state (DNS search path, Service port, ready endpoints, NetworkPolicy, the port a program declared with `kit::listen`) as it was when the container started, and the program that listens answers the request (`kit::serve`, `kit::ask`). Apps never see sockets or cluster objects, and don't get host calls for them beyond those two.

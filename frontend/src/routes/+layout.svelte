@@ -9,7 +9,7 @@
 </script>
 
 <svelte:head>
-	<title>Kubernetes Detective</title>
+	<title>Kubenoire</title>
 </svelte:head>
 
 {@render children()}
