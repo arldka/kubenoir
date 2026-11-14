@@ -16,7 +16,7 @@ ENGINE_SOURCES := $(shell find engine/src -name '*.rs') engine/build.rs engine/C
 # Scenarios `make scenario-check` checks; override with SCENARIO=path/to/scenario.json.
 SCENARIO ?= $(wildcard scenarios/*/scenario.json)
 
-.PHONY: help setup doctor wasm apps registry scenario-check fmt lint test check build dev e2e oracle-goldens fidelity ci clean
+.PHONY: help setup doctor wasm apps registry scenario-check fmt lint test check build dev e2e preview-worker deploy oracle-goldens fidelity ci clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  \033[33m%-8s\033[0m %s\n", $$1, $$2}'
@@ -71,6 +71,12 @@ dev: $(WASM) registry ## Start the dev server
 
 e2e: $(WASM) registry ## Play the game in a real browser (Playwright)
 	cd frontend && bun run test:e2e
+
+preview-worker: build ## Serve the production build the way the Cloudflare Worker will
+	cd frontend && bunx wrangler dev
+
+deploy: build ## Deploy the build to the Cloudflare Worker (CI does this on main)
+	cd frontend && bunx wrangler deploy
 
 # Upstream fidelity: `oracle/` (Go, never shipped) runs upstream Kubernetes on the cases in
 # engine/tests/fidelity and writes the expected outputs the engine is tested against.

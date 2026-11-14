@@ -1,6 +1,6 @@
 # SPEC — sim fidelity roadmap
 
-Source: design review 2026-10-28 (`~/.claude/plans/do-not-edit-any-piped-willow.md`).
+Source: design review 2026-10-28.
 
 ## §G goal
 

@@ -139,3 +139,39 @@ jobs:
           name: e2e-results
           path: frontend/test-results
           retention-days: 7
+
+  # Live demo: publishes the production build to a Cloudflare Worker (static assets, no script)
+  # once every other job has passed on main. Needs the CLOUDFLARE_API_TOKEN and
+  # CLOUDFLARE_ACCOUNT_ID repository secrets.
+  deploy:
+    needs: [engine, fidelity, frontend, e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    environment: production
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm
+          path: frontend/src/lib/wasm
+      - uses: actions/download-artifact@v4
+        with:
+          name: registry
+          path: frontend/static/registry
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: frontend
+          wranglerVersion: "4.156.0"
+          command: deploy
