@@ -95,11 +95,11 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wasm
           path: frontend/src/lib/wasm
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: registry
           path: frontend/static/registry
@@ -119,11 +119,11 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wasm
           path: frontend/src/lib/wasm
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: registry
           path: frontend/static/registry
@@ -159,11 +159,11 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wasm
           path: frontend/src/lib/wasm
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: registry
           path: frontend/static/registry
